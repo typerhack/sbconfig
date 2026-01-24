@@ -1,5 +1,6 @@
 // src/ssh/users.rs
 // Linux system user management
+#![allow(dead_code)]
 
 use crate::error::{AppError, Result};
 use std::process::Command;
@@ -166,16 +167,16 @@ pub fn setup_authorized_keys(username: &str, public_key: &str) -> Result<()> {
     let auth_keys_path = format!("{}/authorized_keys", ssh_dir);
 
     // Create .ssh directory
-    fs::create_dir_all(&ssh_dir).map_err(|e| AppError::Io(e))?;
+    fs::create_dir_all(&ssh_dir).map_err(AppError::Io)?;
 
     // Write authorized_keys
-    fs::write(&auth_keys_path, format!("{}\n", public_key)).map_err(|e| AppError::Io(e))?;
+    fs::write(&auth_keys_path, format!("{}\n", public_key)).map_err(AppError::Io)?;
 
     // Set permissions
     fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700))
-        .map_err(|e| AppError::Io(e))?;
+        .map_err(AppError::Io)?;
     fs::set_permissions(&auth_keys_path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| AppError::Io(e))?;
+        .map_err(AppError::Io)?;
 
     // Change ownership to the user
     let output = Command::new("chown")

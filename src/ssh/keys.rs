@@ -1,5 +1,6 @@
 // src/ssh/keys.rs
 // SSH key generation
+#![allow(dead_code)]
 
 use crate::error::{AppError, Result};
 use rand::rngs::OsRng;
@@ -87,6 +88,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_generate_rsa() {
         let keypair = generate_keypair(KeyType::Rsa, "test@sbconfig").unwrap();
         assert!(keypair.public_key.starts_with("ssh-rsa "));

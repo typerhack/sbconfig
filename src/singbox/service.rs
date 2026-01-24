@@ -1,5 +1,6 @@
 // src/singbox/service.rs
 // sing-box systemd service management
+#![allow(dead_code)]
 
 use crate::error::{AppError, Result};
 use std::process::Command;

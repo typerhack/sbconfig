@@ -1,5 +1,6 @@
 // src/db/models.rs
 // Database models
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

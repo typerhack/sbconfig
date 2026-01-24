@@ -1,5 +1,6 @@
 // src/utils/system.rs
 // System utility functions
+#![allow(dead_code)]
 
 use crate::error::{AppError, Result};
 use std::process::Command;

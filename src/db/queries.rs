@@ -41,6 +41,7 @@ impl Database {
 
     // Users
 
+    #[allow(dead_code)]
     pub fn create_user(
         &self,
         username: &str,
@@ -55,6 +56,7 @@ impl Database {
         Ok(self.conn().last_insert_rowid())
     }
 
+    #[allow(dead_code)]
     pub fn get_user(&self, id: i64) -> Result<Option<User>> {
         let mut stmt = self.conn().prepare(
             "SELECT id, username, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
@@ -64,6 +66,7 @@ impl Database {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
         let mut stmt = self.conn().prepare(
             "SELECT id, username, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
@@ -84,6 +87,7 @@ impl Database {
         Ok(users)
     }
 
+    #[allow(dead_code)]
     pub fn delete_user(&self, id: i64) -> Result<bool> {
         let rows = self
             .conn()

@@ -1,5 +1,6 @@
 // src/db/encryption.rs
 // Private key encryption/decryption using AES-256-GCM
+#![allow(dead_code)]
 
 use crate::error::{AppError, Result};
 use aes_gcm::{

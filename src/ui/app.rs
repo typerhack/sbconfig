@@ -40,7 +40,7 @@ impl MenuItem {
         }
     }
 
-    fn to_screen(&self) -> Option<Screen> {
+    fn screen(self) -> Option<Screen> {
         match self {
             MenuItem::Users => Some(Screen::Users),
             MenuItem::Configs => Some(Screen::Configs),
@@ -141,10 +141,26 @@ impl App {
     }
 
     fn draw_dashboard(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+        let width = area.width;
+        let (menu_area, status_area) = if width < 60 {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(100)])
+                .split(area);
+            (chunks[0], None)
+        } else if width < 90 {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+                .split(area);
+            (chunks[0], Some(chunks[1]))
+        };
 
         // Status panel
         let singbox_info = singbox::detect_singbox().unwrap_or(singbox::SingBoxInfo {
@@ -197,7 +213,9 @@ impl App {
 
         let status = Paragraph::new(status_text)
             .block(Block::default().borders(Borders::ALL).title(" Status "));
-        frame.render_widget(status, chunks[0]);
+        if let Some(area) = status_area {
+            frame.render_widget(status, area);
+        }
 
         // Menu panel with selectable items
         let menu_items: Vec<ListItem> = MenuItem::all()
@@ -222,7 +240,7 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title(" Menu "))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        frame.render_widget(menu, chunks[1]);
+        frame.render_widget(menu, menu_area);
     }
 
     fn draw_users(&self, frame: &mut Frame, area: Rect) {
@@ -274,7 +292,10 @@ impl App {
                     ]);
 
                     let style = if is_selected {
-                        Style::default().bg(Color::DarkGray)
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
@@ -430,7 +451,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let selected = MenuItem::all()[self.menu_index];
-                if let Some(screen) = selected.to_screen() {
+                if let Some(screen) = selected.screen() {
                     self.screen = screen;
                 } else {
                     // Quit selected

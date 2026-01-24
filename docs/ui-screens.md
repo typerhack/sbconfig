@@ -216,6 +216,13 @@ Shown on first launch to configure essential settings.
 
 The main screen shown when sbconfig starts (after first-run setup is complete).
 
+Layout notes:
+- Menu panel is on the left, status panel is on the right.
+- Wide screens: status panel uses about 1/3 of the width.
+- Medium screens: status panel uses about 1/2 of the width.
+- Narrow screens: status panel is hidden to maximize menu space.
+- All menus/lists are interactive with Up/Down (or j/k) and Enter; selection is highlighted.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                                                                          │
@@ -229,32 +236,18 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 │                                                                          │
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   ┌─ System Status ─────────────────────────────────────────────────────┐│
-│   │                                                                      ││
-│   │   Component      Status          Info                    State      ││
-│   │   ────────────────────────────────────────────────────────────────  ││
-│   │   sing-box       ✓ Installed     v1.10.0                 ● Running  ││
-│   │   SSH Port       7344            (custom, not port 22)   ● Active   ││
-│   │   Mode           Production      liberty.zyberis.com               ││
-│   │   Users          3 active        12 configs generated              ││
-│   │                                                                      ││
-│   └──────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
-│   ┌─ Main Menu ─────────────────────────────────────────────────────────┐│
-│   │                                                                      ││
-│   │   > [1]  sing-box Status           View status, control service     ││
-│   │     [2]  User Management           Create, delete, manage users     ││
-│   │     [3]  Generate Client Config    Export configs for devices       ││
-│   │     [4]  Server Settings           Change port, domain, mode        ││
-│   │     [5]  View Logs                 sing-box and SSH logs            ││
-│   │     [6]  Backup & Restore          Database backup operations       ││
-│   │                                                                      ││
-│   │     [q]  Quit                                                        ││
-│   │                                                                      ││
-│   └──────────────────────────────────────────────────────────────────────┘│
+│   ┌─ Main Menu ─────────────────────────────────────┐ ┌─ System Status ─┐│
+│   │                                                  │ │                ││
+│   │   > Manage Users                                 │ │  sing-box: OK  ││
+│   │     Generate Configs                             │ │  Version: 1.10 ││
+│   │     Settings                                     │ │                ││
+│   │     View Logs                                    │ │  Users: 3/5    ││
+│   │     Quit                                         │ │                ││
+│   │                                                  │ │  Active: 3     ││
+│   └──────────────────────────────────────────────────┘ └────────────────┘│
 │                                                                          │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  [↑/↓] Navigate   [Enter] Select   [r] Refresh   [q] Quit   [?] Help    │
+│  [↑/↓] Navigate   [Enter] Select   [q] Quit                            │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 

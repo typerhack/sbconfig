@@ -29,6 +29,9 @@ sbconfig development is organized into **11 phases**, each with specific deliver
 ### Objective
 Set up a complete development and testing environment with Docker-based Linux lab for integration testing.
 
+### Status
+Complete (verified 2026-01-24 via lab-test.sh).
+
 ### Deliverables
 
 | ID | Task | Description |
@@ -345,6 +348,9 @@ echo "  Reset lab:    ./lab/scripts/lab-reset.sh"
 
 ### Objective
 Initialize Rust project with all dependencies and basic structure.
+
+### Status
+Complete (Phase 2 checks: build/test/clippy/fmt/version/help verified 2026-01-24; lab run pending if required).
 
 ### Deliverables
 

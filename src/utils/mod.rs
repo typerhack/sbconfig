@@ -2,5 +2,3 @@
 // Utility functions
 
 mod system;
-
-pub use system::*;

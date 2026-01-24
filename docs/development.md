@@ -594,3 +594,4 @@ sudo cargo test -- --ignored
 - [Database](./database.md) - Database schema
 - [Routing](./routing.md) - Traffic routing configuration
 - [Logging](./logging.md) - Session-based logging system
+- [Phases](./phases.md) - Development phases and test criteria

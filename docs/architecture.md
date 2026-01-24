@@ -464,3 +464,4 @@ fn main() -> Result<()> {
 - [UI Screens](./ui-screens.md) - Screen mockups
 - [Development](./development.md) - Dev setup guide
 - [Logging](./logging.md) - Session-based logging system
+- [Phases](./phases.md) - Development phases and WBS

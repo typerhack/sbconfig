@@ -1,0 +1,27 @@
+# lab/docker-compose.yml
+# sbconfig lab environment orchestration
+
+services:
+  sbconfig-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sbconfig-lab
+    hostname: sbconfig-lab
+    ports:
+      - "2222:22"      # SSH access
+      - "7344:7344"    # Custom SSH port for sing-box
+      - "10808:10808"  # sing-box proxy port
+    volumes:
+      - sbconfig-data:/var/lib/sbconfig
+      - sbconfig-logs:/var/log/sbconfig
+      - ./bin:/opt/sbconfig  # Mount for binary deployment
+    cap_add:
+      - SYS_ADMIN      # For user management
+    security_opt:
+      - seccomp:unconfined
+    restart: unless-stopped
+
+volumes:
+  sbconfig-data:
+  sbconfig-logs:

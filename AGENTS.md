@@ -21,6 +21,7 @@
 | [docs/configuration.md](./docs/configuration.md) | sing-box config generation logic |
 | [docs/routing.md](./docs/routing.md) | Traffic routing presets and custom rules |
 | [docs/logging.md](./docs/logging.md) | Session-based logging system |
+| [docs/phases.md](./docs/phases.md) | Development phases, WBS, and test criteria |
 | [docs/development.md](./docs/development.md) | Development setup and guidelines |
 | [docs/lab-setup.md](./docs/lab-setup.md) | Local development and testing environment |
 
@@ -50,6 +51,8 @@ sbconfig/
 │   ├── installation.md      # Installation guide
 │   ├── configuration.md     # Config generation
 │   ├── logging.md           # Session-based logging system
+│   ├── routing.md           # Traffic routing presets
+│   ├── phases.md            # Development phases and WBS
 │   ├── development.md       # Dev setup
 │   └── lab-setup.md         # Local testing environment
 ├── src/

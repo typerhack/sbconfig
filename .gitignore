@@ -54,3 +54,8 @@ Desktop.ini
 *.bak
 *.backup
 *.orig
+
+
+# Added by cargo
+
+/target

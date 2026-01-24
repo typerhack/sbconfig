@@ -13,6 +13,8 @@
 | Server Settings | Custom SSH port, domain/localhost, proxy port configuration |
 | Monitoring | Log viewing, service status, connection stats |
 | Data Management | SQLite storage, backup, restore |
+| **Update** | Check for updates, download and install, rollback on failure |
+| **Uninstall** | Complete removal of binary, data, users, SSH config |
 
 > **Note:** sbconfig does NOT install sing-box. Users must install it manually before using sbconfig.
 
@@ -414,6 +416,239 @@ Commands:
 
 ---
 
+## 13. Update Management
+
+> Built-in update functionality to keep sbconfig up to date.
+
+### Update Check
+- [ ] Check for new versions on GitHub releases
+- [ ] Display current version vs latest version
+- [ ] Show changelog/release notes summary
+- [ ] Notify user of available updates on startup (optional)
+
+### Update Process
+- [ ] Download new binary from GitHub releases
+- [ ] Verify checksum/signature of downloaded binary
+- [ ] Backup current binary before replacement
+- [ ] Backup database before update
+- [ ] Replace binary with new version
+- [ ] Verify new binary works (`sbconfig --version`)
+- [ ] Rollback to backup if update fails
+- [ ] Display update success/failure status
+
+### Update Options
+- [ ] Check for updates manually from Settings menu
+- [ ] Auto-check for updates on startup (configurable)
+- [ ] Skip specific versions
+- [ ] View update history
+
+### CLI Update
+```
+sbconfig update          # Check and install updates
+sbconfig update --check  # Check only, don't install
+sbconfig update --force  # Force reinstall current version
+```
+
+---
+
+## 14. Complete Uninstall
+
+> Safe and complete removal of sbconfig and all its components.
+
+### Uninstall Scope
+
+| Component | Description | Removal Action |
+|-----------|-------------|----------------|
+| Binary | `/usr/local/bin/sbconfig` | Delete file |
+| Database | `/var/lib/sbconfig/sbconfig.db` | Delete file |
+| Data Directory | `/var/lib/sbconfig/` | Delete directory |
+| Generated Configs | `/var/lib/sbconfig/configs/` | Delete directory |
+| Backups | `/var/lib/sbconfig/backups/` | Delete directory |
+| System Users | Users created by sbconfig | Delete with `userdel -r` |
+| SSH Keys | `~/.ssh/authorized_keys` for each user | Removed with user |
+| SSH Port Config | Custom port line in `/etc/ssh/sshd_config` | Remove line |
+| Firewall Rules | Custom SSH port rules | Show removal commands |
+
+### Uninstall Process
+
+#### Step 1: Pre-Uninstall Summary
+- [ ] Display list of all components that will be removed
+- [ ] Show number of users that will be deleted
+- [ ] Show database size and backup recommendation
+- [ ] Display SSH port that will be deconfigured
+- [ ] Warn about irreversible data loss
+
+#### Step 2: Backup Prompt
+- [ ] Ask if user wants to create final backup before uninstall
+- [ ] If yes: Create timestamped backup to specified location
+- [ ] Backup includes: database, configs, user list
+
+#### Step 3: Confirmation
+- [ ] Require explicit confirmation (type "UNINSTALL" to confirm)
+- [ ] Show final warning about data loss
+- [ ] Option to cancel at this point
+
+#### Step 4: Remove System Users
+- [ ] List all users created by sbconfig
+- [ ] Delete each system user with `userdel -r <username>`
+- [ ] Remove home directories and SSH keys
+- [ ] Log each user removal
+
+#### Step 5: Remove SSH Configuration
+- [ ] Remove custom SSH port from `/etc/ssh/sshd_config`
+- [ ] Restart SSH service to apply changes
+- [ ] Display firewall rule removal commands (manual step)
+
+#### Step 6: Remove Data
+- [ ] Delete database file
+- [ ] Delete configs directory
+- [ ] Delete backups directory
+- [ ] Delete data directory
+
+#### Step 7: Remove Binary
+- [ ] Delete `/usr/local/bin/sbconfig`
+- [ ] Verify binary is removed
+
+#### Step 8: Post-Uninstall Summary
+- [ ] Display summary of removed components
+- [ ] Show any manual steps required (firewall rules)
+- [ ] Display backup location if backup was created
+- [ ] Exit application
+
+### Uninstall Options
+
+| Option | Description |
+|--------|-------------|
+| Full Uninstall | Remove everything including users and data |
+| Keep Users | Remove sbconfig but keep system users intact |
+| Keep Data | Remove binary but keep database for reinstall |
+| Dry Run | Show what would be removed without removing |
+
+### CLI Uninstall
+```
+sbconfig uninstall              # Interactive uninstall
+sbconfig uninstall --full       # Full uninstall (requires --confirm)
+sbconfig uninstall --keep-users # Keep system users
+sbconfig uninstall --keep-data  # Keep database and configs
+sbconfig uninstall --dry-run    # Show what would be removed
+sbconfig uninstall --confirm    # Skip confirmation prompts
+```
+
+### Uninstall Script (Standalone)
+For cases where sbconfig binary is corrupted or missing:
+
+```bash
+#!/bin/bash
+# uninstall-sbconfig.sh
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${RED}sbconfig Complete Uninstaller${NC}"
+echo "=============================="
+echo ""
+echo -e "${YELLOW}WARNING: This will remove sbconfig and ALL associated data!${NC}"
+echo ""
+
+# Check root
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RED}Error: Please run as root (sudo)${NC}"
+    exit 1
+fi
+
+# Show what will be removed
+echo "The following will be removed:"
+echo "  - Binary: /usr/local/bin/sbconfig"
+echo "  - Data:   /var/lib/sbconfig/"
+
+# List users from database if exists
+if [ -f /var/lib/sbconfig/sbconfig.db ]; then
+    echo "  - Database: /var/lib/sbconfig/sbconfig.db"
+    # Extract usernames (requires sqlite3)
+    if command -v sqlite3 &> /dev/null; then
+        USERS=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT username FROM users;" 2>/dev/null || echo "")
+        if [ -n "$USERS" ]; then
+            echo "  - System users:"
+            echo "$USERS" | while read user; do
+                echo "      - $user"
+            done
+        fi
+    fi
+fi
+
+echo ""
+read -p "Type 'UNINSTALL' to confirm: " confirm
+
+if [ "$confirm" != "UNINSTALL" ]; then
+    echo "Uninstall cancelled"
+    exit 0
+fi
+
+echo ""
+echo "Starting uninstall..."
+
+# Remove system users created by sbconfig
+if [ -f /var/lib/sbconfig/sbconfig.db ] && command -v sqlite3 &> /dev/null; then
+    USERS=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT username FROM users;" 2>/dev/null || echo "")
+    if [ -n "$USERS" ]; then
+        echo "$USERS" | while read user; do
+            if id "$user" &>/dev/null; then
+                echo "Removing user: $user"
+                userdel -r "$user" 2>/dev/null || true
+            fi
+        done
+    fi
+fi
+
+# Get SSH port before removing database
+SSH_PORT=""
+if [ -f /var/lib/sbconfig/sbconfig.db ] && command -v sqlite3 &> /dev/null; then
+    SSH_PORT=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT value FROM settings WHERE key='ssh_port';" 2>/dev/null || echo "")
+fi
+
+# Remove SSH port from sshd_config
+if [ -n "$SSH_PORT" ]; then
+    if grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
+        echo "Removing SSH port $SSH_PORT from sshd_config"
+        sed -i "/^Port $SSH_PORT$/d" /etc/ssh/sshd_config
+        systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
+    fi
+fi
+
+# Remove data directory
+if [ -d /var/lib/sbconfig ]; then
+    echo "Removing data directory"
+    rm -rf /var/lib/sbconfig
+fi
+
+# Remove binary
+if [ -f /usr/local/bin/sbconfig ]; then
+    echo "Removing binary"
+    rm -f /usr/local/bin/sbconfig
+fi
+
+# Remove backup binary if exists
+if [ -f /usr/local/bin/sbconfig.bak ]; then
+    rm -f /usr/local/bin/sbconfig.bak
+fi
+
+echo ""
+echo -e "${GREEN}Uninstall complete!${NC}"
+echo ""
+echo "Manual steps (if applicable):"
+if [ -n "$SSH_PORT" ]; then
+    echo "  - Remove firewall rule for port $SSH_PORT"
+    echo "    UFW:       sudo ufw delete allow $SSH_PORT/tcp"
+    echo "    firewalld: sudo firewall-cmd --permanent --remove-port=$SSH_PORT/tcp && sudo firewall-cmd --reload"
+fi
+```
+
+---
+
 ## Feature Priority
 
 ### Phase 1 (MVP)
@@ -431,6 +666,7 @@ Commands:
 4. Settings management (change port, domain)
 5. User enable/disable
 6. **Routing presets** (Default, Iran Direct, Iran Block, China Direct)
+7. **Update check and install**
 
 ### Phase 3
 1. Log viewing
@@ -440,6 +676,7 @@ Commands:
 5. **Rule set management**
 6. Advanced settings
 7. CLI mode
+8. **Complete uninstall with cleanup**
 
 ---
 

@@ -7,13 +7,13 @@
 ### Method 1: One-liner (Recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/sbconfig/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/typerhack/sbconfig/main/install.sh | sudo bash
 ```
 
 ### Method 2: Git Clone
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/sbconfig.git
+git clone https://github.com/typerhack/sbconfig.git
 cd sbconfig
 sudo ./install.sh
 ```
@@ -22,7 +22,7 @@ sudo ./install.sh
 
 ```bash
 # Download the latest release
-wget https://github.com/YOUR_USERNAME/sbconfig/releases/latest/download/sbconfig-linux-amd64.tar.gz
+wget https://github.com/typerhack/sbconfig/releases/latest/download/sbconfig-linux-amd64.tar.gz
 
 # Extract
 tar -xzf sbconfig-linux-amd64.tar.gz
@@ -80,7 +80,7 @@ The installation script (`install.sh`) performs the following steps:
 set -e
 
 # Configuration
-REPO="YOUR_USERNAME/sbconfig"
+REPO="typerhack/sbconfig"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/sbconfig"
 BINARY_NAME="sbconfig"
@@ -281,30 +281,71 @@ sbconfig does **NOT** install sing-box automatically. You must install it manual
 
 ## Updating sbconfig
 
-### Method 1: Re-run Installer
+### Method 1: In-App Update (Recommended)
+
+sbconfig has built-in update functionality:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/sbconfig/main/install.sh | sudo bash
+sudo sbconfig
+# Navigate to Settings > Check for Updates
 ```
 
-### Method 2: Manual Update
+Or via CLI:
+```bash
+# Check for updates
+sudo sbconfig update --check
+
+# Install update
+sudo sbconfig update
+```
+
+### Method 2: Re-run Installer
+
+```bash
+curl -sSL https://raw.githubusercontent.com/typerhack/sbconfig/main/install.sh | sudo bash
+```
+
+### Method 3: Manual Update
 
 ```bash
 # Download new version
-wget https://github.com/YOUR_USERNAME/sbconfig/releases/latest/download/sbconfig-linux-amd64.tar.gz
+wget https://github.com/typerhack/sbconfig/releases/latest/download/sbconfig-linux-amd64.tar.gz
 
 # Backup database
 sudo cp /var/lib/sbconfig/sbconfig.db /var/lib/sbconfig/sbconfig.db.bak
 
+# Backup current binary
+sudo cp /usr/local/bin/sbconfig /usr/local/bin/sbconfig.bak
+
 # Replace binary
 sudo tar -xzf sbconfig-linux-amd64.tar.gz -C /usr/local/bin/
+
+# Verify update
+sbconfig --version
 ```
+
+### Update Safety
+
+- Database and settings are **preserved** during updates
+- Automatic backup is created before update
+- If update fails, rollback to previous version
+- System users and SSH configuration are not affected
 
 > **Note:** Your database and settings are preserved during updates.
 
 ## Uninstallation
 
-### Full Uninstall
+### Quick Uninstall (Keep Data)
+
+Remove sbconfig binary but keep database and users for potential reinstall:
+
+```bash
+sudo rm /usr/local/bin/sbconfig
+```
+
+### Full Uninstall (Remove Everything)
+
+> **WARNING:** This permanently deletes all data, users, and configurations!
 
 ```bash
 # Remove binary
@@ -318,38 +359,189 @@ sudo rm -rf /var/lib/sbconfig
 # sudo userdel -r user_beta
 ```
 
-### Uninstall Script
+### Complete Uninstall (In-App)
+
+sbconfig provides a complete uninstall option that removes everything it created:
+
+```bash
+sudo sbconfig
+# Navigate to Settings > Uninstall > Complete Uninstall
+```
+
+Or via CLI:
+```bash
+# Interactive uninstall
+sudo sbconfig uninstall
+
+# Full uninstall without prompts (DANGEROUS)
+sudo sbconfig uninstall --full --confirm
+
+# Preview what would be removed
+sudo sbconfig uninstall --dry-run
+```
+
+### What Complete Uninstall Removes
+
+| Component | Location | Action |
+|-----------|----------|--------|
+| Binary | `/usr/local/bin/sbconfig` | Deleted |
+| Database | `/var/lib/sbconfig/sbconfig.db` | Deleted |
+| Data Directory | `/var/lib/sbconfig/` | Deleted |
+| Generated Configs | `/var/lib/sbconfig/configs/` | Deleted |
+| Backups | `/var/lib/sbconfig/backups/` | Deleted |
+| System Users | Created proxy users | Deleted with `userdel -r` |
+| SSH Keys | User authorized_keys | Deleted with user |
+| SSH Port Config | Custom port in `/etc/ssh/sshd_config` | Removed |
+
+### Uninstall Options
+
+| Option | Description |
+|--------|-------------|
+| `--full` | Remove everything including users and data |
+| `--keep-users` | Remove sbconfig but keep system users |
+| `--keep-data` | Remove binary but keep database |
+| `--dry-run` | Show what would be removed |
+| `--confirm` | Skip confirmation prompts |
+
+### Standalone Uninstall Script
+
+For cases where sbconfig is corrupted or you prefer a standalone script:
 
 ```bash
 #!/bin/bash
+# uninstall-sbconfig.sh
+# Download: curl -sSL https://raw.githubusercontent.com/typerhack/sbconfig/main/uninstall.sh | sudo bash
 
-echo "sbconfig Uninstaller"
-echo "===================="
+set -e
 
-read -p "Remove all data including users and configs? [y/N] " confirm
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+echo -e "${RED}sbconfig Complete Uninstaller${NC}"
+echo "=============================="
+echo ""
+echo -e "${YELLOW}WARNING: This will remove sbconfig and ALL associated data!${NC}"
+echo ""
+
+# Check root
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RED}Error: Please run as root (sudo)${NC}"
+    exit 1
+fi
+
+# Show what will be removed
+echo "The following will be removed:"
+echo "  - Binary: /usr/local/bin/sbconfig"
+echo "  - Data:   /var/lib/sbconfig/"
+
+# List users from database if exists
+if [ -f /var/lib/sbconfig/sbconfig.db ]; then
+    echo "  - Database: /var/lib/sbconfig/sbconfig.db"
+    if command -v sqlite3 &> /dev/null; then
+        USERS=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT username FROM users;" 2>/dev/null || echo "")
+        if [ -n "$USERS" ]; then
+            echo "  - System users:"
+            echo "$USERS" | while read user; do
+                echo "      - $user"
+            done
+        fi
+    fi
+fi
+
+echo ""
+read -p "Type 'UNINSTALL' to confirm: " confirm
+
+if [ "$confirm" != "UNINSTALL" ]; then
     echo "Uninstall cancelled"
     exit 0
 fi
 
-# Remove binary
-if [ -f /usr/local/bin/sbconfig ]; then
-    sudo rm /usr/local/bin/sbconfig
-    echo "Removed binary"
+echo ""
+echo "Starting uninstall..."
+
+# Remove system users created by sbconfig
+if [ -f /var/lib/sbconfig/sbconfig.db ] && command -v sqlite3 &> /dev/null; then
+    USERS=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT username FROM users;" 2>/dev/null || echo "")
+    if [ -n "$USERS" ]; then
+        echo "$USERS" | while read user; do
+            if id "$user" &>/dev/null; then
+                echo "Removing user: $user"
+                userdel -r "$user" 2>/dev/null || true
+            fi
+        done
+    fi
 fi
 
-# Remove data
+# Get SSH port before removing database
+SSH_PORT=""
+if [ -f /var/lib/sbconfig/sbconfig.db ] && command -v sqlite3 &> /dev/null; then
+    SSH_PORT=$(sqlite3 /var/lib/sbconfig/sbconfig.db "SELECT value FROM settings WHERE key='ssh_port';" 2>/dev/null || echo "")
+fi
+
+# Remove SSH port from sshd_config
+if [ -n "$SSH_PORT" ]; then
+    if grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
+        echo "Removing SSH port $SSH_PORT from sshd_config"
+        sed -i "/^Port $SSH_PORT$/d" /etc/ssh/sshd_config
+        systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
+    fi
+fi
+
+# Remove data directory
 if [ -d /var/lib/sbconfig ]; then
-    sudo rm -rf /var/lib/sbconfig
-    echo "Removed data directory"
+    echo "Removing data directory"
+    rm -rf /var/lib/sbconfig
+fi
+
+# Remove binary
+if [ -f /usr/local/bin/sbconfig ]; then
+    echo "Removing binary"
+    rm -f /usr/local/bin/sbconfig
+fi
+
+# Remove backup binary if exists
+if [ -f /usr/local/bin/sbconfig.bak ]; then
+    rm -f /usr/local/bin/sbconfig.bak
 fi
 
 echo ""
-echo "Uninstall complete"
-echo "Note: System users created by sbconfig are NOT removed"
-echo "Remove them manually with: sudo userdel -r <username>"
+echo -e "${GREEN}Uninstall complete!${NC}"
+echo ""
+
+# Show manual firewall steps
+if [ -n "$SSH_PORT" ]; then
+    echo "Manual steps required:"
+    echo "  Remove firewall rule for port $SSH_PORT:"
+    echo "    UFW:       sudo ufw delete allow $SSH_PORT/tcp"
+    echo "    firewalld: sudo firewall-cmd --permanent --remove-port=$SSH_PORT/tcp && sudo firewall-cmd --reload"
+fi
 ```
+
+### Post-Uninstall Manual Steps
+
+After uninstalling, you may need to manually:
+
+1. **Remove firewall rules** for the custom SSH port:
+   ```bash
+   # UFW
+   sudo ufw delete allow <PORT>/tcp
+   
+   # firewalld
+   sudo firewall-cmd --permanent --remove-port=<PORT>/tcp
+   sudo firewall-cmd --reload
+   ```
+
+2. **Remove any remaining system users** (if `--keep-users` was used):
+   ```bash
+   sudo userdel -r <username>
+   ```
+
+3. **Check SSH configuration** to ensure custom port line was removed:
+   ```bash
+   grep "^Port" /etc/ssh/sshd_config
+   ```
 
 ## File Locations
 

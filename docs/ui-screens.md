@@ -754,9 +754,9 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 │   │                                                                      ││
 │   │   This preset optimizes routing for users in Iran:                  ││
 │   │                                                                      ││
-│   │   ✓ Iranian websites connect DIRECTLY (faster access)               ││
-│   │   ✓ Iranian ads are BLOCKED                                         ││
-│   │   ✓ All other traffic goes through SSH PROXY                        ││
+│   │   * Iranian websites connect DIRECTLY (faster access)               ││
+│   │   * Iranian ads are BLOCKED                                         ││
+│   │   * All other traffic goes through SSH PROXY                        ││
 │   │                                                                      ││
 │   └──────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
@@ -764,8 +764,8 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 │   │                                                                      ││
 │   │   Source: github.com/bootmortis/sing-geosite                        ││
 │   │                                                                      ││
-│   │   • geosite-ads.srs    (Iran ad domains)         → block            ││
-│   │   • geosite-all.srs    (All Iran domains)        → direct           ││
+│   │   * geosite-ads.srs    (Iran ad domains)         -> block           ││
+│   │   * geosite-all.srs    (All Iran domains)        -> direct          ││
 │   │                                                                      ││
 │   │   Rule sets auto-update every 7 days                                ││
 │   │                                                                      ││
@@ -773,11 +773,11 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 │                                                                          │
 │   ┌─ Generated Rules ────────────────────────────────────────────────────┐│
 │   │                                                                      ││
-│   │   1. ip_is_private: true           → direct                         ││
-│   │   2. rule_set: iran-geosite-ads    → block                          ││
-│   │   3. rule_set: iran-geosite-all    → direct                         ││
-│   │   4. domain_suffix: .ir            → direct                         ││
-│   │   5. (final)                       → ssh-out (proxy)                ││
+│   │   1. ip_is_private: true           -> direct                        ││
+│   │   2. rule_set: iran-geosite-ads    -> block                         ││
+│   │   3. rule_set: iran-geosite-all    -> direct                        ││
+│   │   4. domain_suffix: .ir            -> direct                        ││
+│   │   5. (final)                       -> ssh-out (proxy)               ││
 │   │                                                                      ││
 │   └──────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
@@ -785,6 +785,232 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 │                                                                          │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  [Enter] Apply   [Esc] Back                                              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 15. Check for Updates
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > Settings > Check for Updates                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌─ Version Information ──────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Current Version:    v0.2.1                                       │ │
+│   │   Latest Version:     v0.3.0                                       │ │
+│   │   Status:             Update Available                             │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│   ┌─ Release Notes (v0.3.0) ───────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Released: 2024-01-20                                             │ │
+│   │                                                                     │ │
+│   │   New Features:                                                    │ │
+│   │   * Added Iran Direct routing preset                               │ │
+│   │   * Added QR code generation for configs                           │ │
+│   │   * Improved user management interface                             │ │
+│   │                                                                     │ │
+│   │   Bug Fixes:                                                       │ │
+│   │   * Fixed SSH key generation on ARM64                              │ │
+│   │   * Fixed database migration issue                                 │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│   ┌─ Update Options ───────────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   [x] Backup database before update                                │ │
+│   │   [ ] Check for updates on startup (weekly)                        │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│              [ Install Update ]    [ Skip This Version ]    [ Cancel ]   │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [Enter] Install   [s] Skip   [Esc] Back                                │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 16. Update Progress
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > Settings > Updating...                                       │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│                                                                          │
+│   ┌─ Update Progress ──────────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Updating to v0.3.0                                               │ │
+│   │                                                                     │ │
+│   │   [========================================----------]  80%        │ │
+│   │                                                                     │ │
+│   │   Steps:                                                           │ │
+│   │   [*] Creating database backup                                     │ │
+│   │   [*] Downloading v0.3.0 binary                                    │ │
+│   │   [*] Verifying checksum                                           │ │
+│   │   [ ] Backing up current binary                                    │ │
+│   │   [ ] Installing new binary                                        │ │
+│   │   [ ] Verifying installation                                       │ │
+│   │                                                                     │ │
+│   │   Download: 2.4 MB / 3.0 MB                                        │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│                                                                          │
+│                                                                          │
+│                              [ Cancel Update ]                           │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Update in progress... Please wait.                                     │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 17. Complete Uninstall
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > Settings > Uninstall                                         │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌─ Uninstall Options ────────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Select uninstall type:                                           │ │
+│   │                                                                     │ │
+│   │   > ( ) Remove Binary Only                                         │ │
+│   │         Keep database and users for potential reinstall            │ │
+│   │                                                                     │ │
+│   │     ( ) Keep Users, Remove Data                                    │ │
+│   │         Remove sbconfig data but keep system users                 │ │
+│   │                                                                     │ │
+│   │     (●) Complete Uninstall                                         │ │
+│   │         Remove everything including users and all data             │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│   ┌─ What Will Be Removed ─────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   [*] Binary:        /usr/local/bin/sbconfig                       │ │
+│   │   [*] Database:      /var/lib/sbconfig/sbconfig.db (2.4 MB)        │ │
+│   │   [*] Configs:       /var/lib/sbconfig/configs/ (15 files)         │ │
+│   │   [*] Backups:       /var/lib/sbconfig/backups/ (3 files)          │ │
+│   │   [*] System Users:  5 users (user_alpha, user_beta, ...)          │ │
+│   │   [*] SSH Config:    Port 7344 from /etc/ssh/sshd_config           │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│            [ Create Backup First ]    [ Proceed ]    [ Cancel ]          │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [↑/↓] Select Option   [Enter] Proceed   [b] Backup   [Esc] Cancel      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 18. Uninstall Confirmation
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│                                                                          │
+│      ┌─────────────────────────────────────────────────────────────┐    │
+│      │                                                              │    │
+│      │   !! COMPLETE UNINSTALL !!                                   │    │
+│      │                                                              │    │
+│      │   This will PERMANENTLY DELETE:                              │    │
+│      │                                                              │    │
+│      │   * sbconfig binary and all data                             │    │
+│      │   * 5 system users and their home directories                │    │
+│      │   * All SSH keys and generated configs                       │    │
+│      │   * Custom SSH port configuration                            │    │
+│      │                                                              │    │
+│      │   THIS ACTION CANNOT BE UNDONE!                              │    │
+│      │                                                              │    │
+│      │   ─────────────────────────────────────────────────────      │    │
+│      │                                                              │    │
+│      │   Type 'UNINSTALL' to confirm:                               │    │
+│      │                                                              │    │
+│      │   [UNINSTALL_______________________]                         │    │
+│      │                                                              │    │
+│      │                   [ Confirm ]    [ Cancel ]                  │    │
+│      │                                                              │    │
+│      └─────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 19. Uninstall Progress
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > Uninstalling...                                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│                                                                          │
+│   ┌─ Uninstall Progress ───────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Removing sbconfig...                                             │ │
+│   │                                                                     │ │
+│   │   [==================================----------------]  70%         │ │
+│   │                                                                     │ │
+│   │   Steps:                                                           │ │
+│   │   [*] Removing user: user_alpha                                    │ │
+│   │   [*] Removing user: user_beta                                     │ │
+│   │   [*] Removing user: user_gamma                                    │ │
+│   │   [>] Removing user: user_delta                                    │ │
+│   │   [ ] Removing user: user_epsilon                                  │ │
+│   │   [ ] Removing SSH port from sshd_config                           │ │
+│   │   [ ] Restarting SSH service                                       │ │
+│   │   [ ] Removing data directory                                      │ │
+│   │   [ ] Removing binary                                              │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│                                                                          │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Uninstall in progress... Please wait.                                  │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 20. Uninstall Complete
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > Uninstall Complete                                           │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│                                                                          │
+│   ┌─ Uninstall Summary ────────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   sbconfig has been completely removed.                            │ │
+│   │                                                                     │ │
+│   │   Removed:                                                         │ │
+│   │   [*] Binary: /usr/local/bin/sbconfig                              │ │
+│   │   [*] Database: /var/lib/sbconfig/sbconfig.db                      │ │
+│   │   [*] Data directory: /var/lib/sbconfig/                           │ │
+│   │   [*] System users: 5 users removed                                │ │
+│   │   [*] SSH config: Port 7344 removed from sshd_config               │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│   ┌─ Manual Steps Required ────────────────────────────────────────────┐ │
+│   │                                                                     │ │
+│   │   Please remove the firewall rule for port 7344:                   │ │
+│   │                                                                     │ │
+│   │   UFW:       sudo ufw delete allow 7344/tcp                        │ │
+│   │   firewalld: sudo firewall-cmd --permanent --remove-port=7344/tcp  │ │
+│   │              sudo firewall-cmd --reload                            │ │
+│   │                                                                     │ │
+│   └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│   Backup saved to: /tmp/sbconfig-backup-20240122-153045.tar.gz          │
+│                                                                          │
+│                              [ Exit ]                                    │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Press any key to exit                                                  │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 

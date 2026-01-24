@@ -1,0 +1,56 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# Database files (local development)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+
+# Build artifacts
+*.tar.gz
+*.zip
+dist/
+
+# Test coverage
+*.profraw
+*.profdata
+coverage/
+tarpaulin-report.html
+
+# Documentation build
+/target/doc/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*.orig

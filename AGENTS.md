@@ -20,6 +20,7 @@
 | [docs/installation.md](./docs/installation.md) | Installation methods and scripts |
 | [docs/configuration.md](./docs/configuration.md) | sing-box config generation logic |
 | [docs/routing.md](./docs/routing.md) | Traffic routing presets and custom rules |
+| [docs/logging.md](./docs/logging.md) | Session-based logging system |
 | [docs/development.md](./docs/development.md) | Development setup and guidelines |
 | [docs/lab-setup.md](./docs/lab-setup.md) | Local development and testing environment |
 

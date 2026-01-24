@@ -1014,14 +1014,218 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 21. Log Viewer
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > View Logs                                                    │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌─ Filters ────────────────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Level:    [x] INFO  [x] WARN  [x] ERROR  [ ] DEBUG  [ ] TRACE  │  │
+│   │   Category: [All_____________▼]   Session: [Current__________▼]  │  │
+│   │   User:     [All Users_______▼]   Search:  [___________________] │  │
+│   │   Time:     [Last 1 hour_____▼]                       [ Search ] │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Log Entries ────────────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   TIME         LEVEL  CATEGORY  MESSAGE                          │  │
+│   │   ────────────────────────────────────────────────────────────   │  │
+│   │   15:32:45.123 INFO   app       Application started v0.2.1       │  │
+│   │   15:32:45.456 INFO   db        Database connection established  │  │
+│   │   15:32:46.789 INFO   singbox   sing-box service detected        │  │
+│   │ > 15:33:12.234 WARN   ssh       SSH key generation slow (2.3s)   │  │
+│   │   15:33:45.567 INFO   user      User 'user_alpha' created        │  │
+│   │   15:34:01.890 ERROR  config    Config validation failed         │  │
+│   │   15:34:15.123 INFO   user      User 'user_beta' disabled        │  │
+│   │                                                                   │  │
+│   │                                              Showing 7 of 156     │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Log Details ────────────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Time:     2024-01-22 15:33:12.234 UTC                          │  │
+│   │   Level:    WARN                                                 │  │
+│   │   Category: ssh                                                  │  │
+│   │   Session:  20240122_153045_a1b2c3                               │  │
+│   │   Message:  SSH key generation slow (2.3s)                       │  │
+│   │   Context:  {"key_type": "ed25519", "duration_ms": 2300}         │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Actions ────────────────────────────────────────────────────────┐  │
+│   │  [f] Follow (live)  [e] Export  [c] Clear Filters  [r] Refresh   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [↑/↓] Navigate  [Enter] Details  [f] Follow  [e] Export  [Esc] Back    │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 22. User Limits Editor
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > User Management > user_beta > Limits                         │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   User: user_beta                                                        │
+│   Status: Active | Created: 2024-01-18                                   │
+│                                                                          │
+│   ┌─ Connection Limits ──────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Maximum Concurrent Connections:                                 │  │
+│   │                                                                   │  │
+│   │   ( ) 1 connection                                                │  │
+│   │   ( ) 2 connections                                               │  │
+│   │   (●) 3 connections                                               │  │
+│   │   ( ) 5 connections                                               │  │
+│   │   ( ) 10 connections                                              │  │
+│   │   ( ) Unlimited                                                   │  │
+│   │                                                                   │  │
+│   │   Current connections: 2 / 3                                      │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Traffic Quota ──────────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Data Transfer Limit:                                            │  │
+│   │                                                                   │  │
+│   │   ( ) 1 GB                                                        │  │
+│   │   ( ) 5 GB                                                        │  │
+│   │   (●) 10 GB                                                       │  │
+│   │   ( ) 50 GB                                                       │  │
+│   │   ( ) 100 GB                                                      │  │
+│   │   ( ) Unlimited                                                   │  │
+│   │                                                                   │  │
+│   │   Quota Period:   (●) Monthly  ( ) Weekly  ( ) Daily  ( ) Total   │  │
+│   │                                                                   │  │
+│   │   Current Usage:  7.2 GB / 10 GB (72%)                            │  │
+│   │   [========================================--------]              │  │
+│   │                                                                   │  │
+│   │   Period Resets:  2024-02-01 00:00 UTC (9 days)                   │  │
+│   │   [x] Auto-disable when quota exceeded                            │  │
+│   │   [x] Warn at 80% usage                                           │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│                    [ Save Changes ]    [ Reset Quota ]    [ Cancel ]     │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [Tab] Next Field   [Space] Select   [Enter] Save   [Esc] Cancel        │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 23. Traffic Usage Dashboard
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > User Management > user_beta > Usage Statistics               │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   User: user_beta                                                        │
+│   Status: Active | Member since: 2024-01-18                              │
+│                                                                          │
+│   ┌─ Current Period (January 2024) ──────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Traffic Used:     7.2 GB / 10 GB                               │  │
+│   │   [========================================--------]  72%        │  │
+│   │                                                                   │  │
+│   │   Upload:           2.1 GB                                       │  │
+│   │   Download:         5.1 GB                                       │  │
+│   │                                                                   │  │
+│   │   Connections:      45 total this month                          │  │
+│   │   Total Time:       127 hours 34 minutes                         │  │
+│   │   Last Connected:   2024-01-22 14:32:00 (2 hours ago)            │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Daily Usage (Last 7 Days) ──────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   1.5 GB │                                    ██                  │  │
+│   │   1.2 GB │              ██                    ██                  │  │
+│   │   0.9 GB │    ██        ██        ██          ██                  │  │
+│   │   0.6 GB │    ██   ██   ██   ██   ██   ██     ██                  │  │
+│   │   0.3 GB │    ██   ██   ██   ██   ██   ██     ██                  │  │
+│   │          └────────────────────────────────────────                │  │
+│   │            Jan16 Jan17 Jan18 Jan19 Jan20 Jan21 Jan22              │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ All-Time Statistics ────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   Total Traffic:        45.8 GB (Upload: 12.3 GB, Download: 33.5 GB) │
+│   │   Total Connections:    312                                      │  │
+│   │   Total Time Online:    523 hours 12 minutes                     │  │
+│   │   Configs Generated:    5                                        │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Actions ────────────────────────────────────────────────────────┐  │
+│   │  [e] Export Report (CSV)  [l] Edit Limits  [h] History  [r] Refresh │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [e] Export  [l] Limits  [h] History  [r] Refresh  [Esc] Back           │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 24. Active Connections Monitor
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  sbconfig > User Management > Active Connections                         │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   Total Active Connections: 7                                            │
+│                                                                          │
+│   ┌─ Active Connections ─────────────────────────────────────────────┐  │
+│   │                                                                   │  │
+│   │   USER          CLIENT IP        CONNECTED    DURATION   TRAFFIC  │  │
+│   │   ─────────────────────────────────────────────────────────────   │  │
+│   │   user_alpha    203.45.67.89     14:32:10     2h 15m     245 MB   │  │
+│   │   user_alpha    203.45.67.90     15:45:22     1h 02m     128 MB   │  │
+│   │ > user_beta     87.123.45.67     16:12:33     0h 35m      67 MB   │  │
+│   │   user_beta     87.123.45.68     16:30:45     0h 17m      23 MB   │  │
+│   │   user_gamma    45.67.89.123     12:00:00     4h 47m     512 MB   │  │
+│   │   user_delta    123.45.67.89     16:00:15     0h 47m      89 MB   │  │
+│   │   user_delta    123.45.67.90     16:15:30     0h 32m      45 MB   │  │
+│   │                                                                   │  │
+│   │                                                    Total: 1.1 GB  │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Connection Details: user_beta @ 87.123.45.67 ───────────────────┐  │
+│   │                                                                   │  │
+│   │   Username:     user_beta                                        │  │
+│   │   Client IP:    87.123.45.67                                     │  │
+│   │   Connected:    2024-01-22 16:12:33 UTC                          │  │
+│   │   Duration:     0h 35m 12s                                       │  │
+│   │   Upload:       23 MB                                            │  │
+│   │   Download:     44 MB                                            │  │
+│   │   Session ID:   20240122_161233_x7y8z9                           │  │
+│   │                                                                   │  │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│   ┌─ Actions ────────────────────────────────────────────────────────┐  │
+│   │  [d] Disconnect Selected  [D] Disconnect All for User  [r] Refresh │
+│   └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  [↑/↓] Navigate  [d] Disconnect  [r] Refresh (auto: 5s)  [Esc] Back    │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
 ## Color Scheme
 
 | Element | Color | Usage |
 |---------|-------|-------|
 | Primary | Cyan | Headers, selected items |
-| Success | Green | ✓ indicators, success messages |
-| Warning | Yellow | ⚠ warnings, pending states |
-| Error | Red | ✗ indicators, error messages |
+| Success | Green | Checkmarks, success messages |
+| Warning | Yellow | Warnings, pending states |
+| Error | Red | X marks, error messages |
 | Muted | Gray | Secondary text, borders |
 | Text | White | Primary text content |
 | Background | Black | Default background |
@@ -1032,3 +1236,4 @@ The main screen shown when sbconfig starts (after first-run setup is complete).
 - [Architecture](./architecture.md) - System design
 - [Development](./development.md) - Dev setup
 - [Routing](./routing.md) - Detailed routing documentation
+- [Logging](./logging.md) - Logging system documentation

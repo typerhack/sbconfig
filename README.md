@@ -131,6 +131,7 @@ sbconfig --version
 | [Installation](docs/installation.md) | Detailed installation guide |
 | [Configuration](docs/configuration.md) | Config generation details |
 | [Routing](docs/routing.md) | Traffic routing configuration |
+| [Logging](docs/logging.md) | Session-based logging system |
 | [Development](docs/development.md) | Contributing and dev setup |
 | [Lab Setup](docs/lab-setup.md) | Local development environment |
 

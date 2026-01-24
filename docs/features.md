@@ -8,9 +8,12 @@
 |----------|----------|
 | sing-box Management | Detection (not install), start/stop, status, version check |
 | User Management | Create, list, delete, enable/disable, regenerate keys |
+| **Connection Limits** | Max concurrent connections per user, real-time tracking |
+| **Traffic Quota** | Data transfer limits, usage tracking, auto-disable on exceed |
 | Config Generation | JSON export, URI generation, QR codes, multi-platform |
 | **Routing** | Presets (Iran, China), custom rules, rule sets, block/direct/proxy |
 | Server Settings | Custom SSH port, domain/localhost, proxy port configuration |
+| **Logging** | Session-based logs, levels (TRACE-FATAL), filtering, auto-cleanup |
 | Monitoring | Log viewing, service status, connection stats |
 | Data Management | SQLite storage, backup, restore |
 | **Update** | Check for updates, download and install, rollback on failure |
@@ -116,6 +119,37 @@
 - [ ] Regenerate key pair
 - [ ] Export private key
 - [ ] Key rotation with old key invalidation
+
+### Connection Limits
+- [ ] Set maximum concurrent connections per user
+- [ ] Options: 1, 2, 3, 5, 10, unlimited
+- [ ] Real-time connection count tracking
+- [ ] Reject new connections when limit reached
+- [ ] Display current connections vs limit
+- [ ] Alert when approaching limit (80%)
+- [ ] Per-user limit override (global default + per-user)
+- [ ] Connection history tracking
+
+### Traffic Quota Management
+- [ ] Set data transfer limit per user (MB/GB)
+- [ ] Options: 1GB, 5GB, 10GB, 50GB, 100GB, unlimited
+- [ ] Track upload and download separately
+- [ ] Track total traffic (upload + download)
+- [ ] Quota period: daily, weekly, monthly, total
+- [ ] Auto-disable user when quota exceeded
+- [ ] Warning at 80% and 95% quota usage
+- [ ] Reset quota manually or automatically
+- [ ] Traffic usage history and graphs
+- [ ] Per-user quota override
+
+### Usage Statistics
+- [ ] Current session duration
+- [ ] Total connection time (all time)
+- [ ] Connection count (today/week/month/total)
+- [ ] Traffic used (today/week/month/total)
+- [ ] Last connection timestamp
+- [ ] Peak usage times
+- [ ] Export usage report (CSV/JSON)
 
 ---
 
@@ -265,25 +299,88 @@
 
 ---
 
-## 7. Log Viewing
+## 7. Logging System
 
-### sing-box Logs
-- [ ] View sing-box service logs
+> See [docs/logging.md](./logging.md) for detailed logging documentation.
+
+### Log Levels
+- [ ] TRACE - Most detailed, step-by-step execution
+- [ ] DEBUG - Detailed information for debugging
+- [ ] INFO - General operational information
+- [ ] WARN - Warning conditions, potential issues
+- [ ] ERROR - Error conditions, operation failed
+- [ ] FATAL - Critical errors, application may crash
+- [ ] Configurable minimum log level
+
+### Log Categories
+- [ ] `app` - Application lifecycle
+- [ ] `db` - Database operations
+- [ ] `ssh` - SSH operations
+- [ ] `singbox` - sing-box operations
+- [ ] `ui` - User interface
+- [ ] `auth` - Authentication
+- [ ] `user` - User management
+- [ ] `config` - Config generation
+- [ ] `session` - Session tracking
+- [ ] `system` - System operations
+
+### Session-Based Logging
+- [ ] Unique session ID for each app run/user connection
+- [ ] Session types: app, user, task, api
+- [ ] Separate log files per session
+- [ ] Session metadata (user, start/end time, status)
+- [ ] Easy filtering by session ID
+- [ ] Session lifecycle tracking
+
+### Log Storage
+- [ ] Dual storage: SQLite database + log files
+- [ ] Indexed for fast querying
+- [ ] JSON context/metadata support
+- [ ] Session-specific log files in `logs/sessions/`
+- [ ] Main application log with rotation
+- [ ] Error-only log file
+
+### Log Viewing (TUI)
 - [ ] Real-time log streaming
-- [ ] Filter by log level (debug, info, warn, error)
-- [ ] Search in logs
-- [ ] Export logs to file
-
-### SSH Logs
-- [ ] View SSH authentication logs
+- [ ] Filter by level (checkboxes)
+- [ ] Filter by category
+- [ ] Filter by session (dropdown)
 - [ ] Filter by user
-- [ ] Show successful/failed attempts
-- [ ] Identify connection sources
+- [ ] Time range picker
+- [ ] Full-text search
+- [ ] Pause/resume streaming
 
-### Application Logs
-- [ ] sbconfig operation logs
-- [ ] Error tracking
-- [ ] Audit trail for user management
+### Log Querying (CLI)
+- [ ] `sbconfig logs` - View recent logs
+- [ ] `sbconfig logs --session <id>` - View session logs
+- [ ] `sbconfig logs --level error` - Filter by level
+- [ ] `sbconfig logs --category user,ssh` - Filter by category
+- [ ] `sbconfig logs --user <username>` - Filter by user
+- [ ] `sbconfig logs --since "1 hour ago"` - Time filter
+- [ ] `sbconfig logs --search "keyword"` - Search logs
+- [ ] `sbconfig logs --follow` - Real-time follow
+- [ ] `sbconfig logs --export <file>` - Export logs
+
+### Log Rotation
+- [ ] Size-based rotation (10MB default)
+- [ ] Keep N rotated files (5 default)
+- [ ] Compress old logs (gzip)
+- [ ] Archive by month
+
+### Log Retention & Cleanup
+- [ ] Configurable retention per log level
+- [ ] TRACE: 1 day, DEBUG: 3 days, INFO: 7 days
+- [ ] WARN: 30 days, ERROR: 90 days, FATAL: 365 days
+- [ ] Automatic daily cleanup
+- [ ] Manual cleanup command
+- [ ] Session log retention: 30 days
+- [ ] Archive retention: 90 days
+
+### External Log Sources
+- [ ] View sing-box service logs
+- [ ] View SSH authentication logs (`/var/log/auth.log`)
+- [ ] Aggregate all log sources
+- [ ] Filter by source
 
 ---
 
@@ -658,6 +755,7 @@ fi
 4. User creation with key generation
 5. Basic config generation (JSON) with default routing
 6. User deletion
+7. **Basic logging** (INFO level, file-based)
 
 ### Phase 2
 1. QR code generation
@@ -667,9 +765,11 @@ fi
 5. User enable/disable
 6. **Routing presets** (Default, Iran Direct, Iran Block, China Direct)
 7. **Update check and install**
+8. **Connection limits** (max concurrent connections per user)
+9. **Traffic quota** (basic usage tracking)
 
 ### Phase 3
-1. Log viewing
+1. **Advanced logging** (session-based, all levels, TUI viewer)
 2. Backup/restore
 3. Config history
 4. **Custom routing rules**
@@ -677,6 +777,8 @@ fi
 6. Advanced settings
 7. CLI mode
 8. **Complete uninstall with cleanup**
+9. **Traffic analytics and reporting**
+10. **Log retention and auto-cleanup**
 
 ---
 
@@ -687,3 +789,4 @@ fi
 - [UI Screens](./ui-screens.md) - Screen mockups
 - [Configuration](./configuration.md) - Config generation
 - [Routing](./routing.md) - Traffic routing configuration
+- [Logging](./logging.md) - Logging system documentation

@@ -49,6 +49,7 @@ sbconfig/
 │   ├── ui-screens.md        # TUI mockups
 │   ├── installation.md      # Installation guide
 │   ├── configuration.md     # Config generation
+│   ├── logging.md           # Session-based logging system
 │   ├── development.md       # Dev setup
 │   └── lab-setup.md         # Local testing environment
 ├── src/

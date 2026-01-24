@@ -463,3 +463,4 @@ fn main() -> Result<()> {
 - [Database](./database.md) - Database schema details
 - [UI Screens](./ui-screens.md) - Screen mockups
 - [Development](./development.md) - Dev setup guide
+- [Logging](./logging.md) - Session-based logging system

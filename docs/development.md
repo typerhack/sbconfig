@@ -593,3 +593,4 @@ sudo cargo test -- --ignored
 - [Features](./features.md) - Feature specifications
 - [Database](./database.md) - Database schema
 - [Routing](./routing.md) - Traffic routing configuration
+- [Logging](./logging.md) - Session-based logging system

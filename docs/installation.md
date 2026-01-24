@@ -651,3 +651,4 @@ sudo ss -tlnp | grep XXXX
 - [Configuration](./configuration.md) - Config generation
 - [Development](./development.md) - Building from source
 - [Lab Setup](./lab-setup.md) - Local development environment
+- [Logging](./logging.md) - Session-based logging system

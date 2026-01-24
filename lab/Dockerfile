@@ -4,7 +4,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies
+# Install dependencies (including build tools for Rust)
 RUN apt-get update && apt-get install -y \
     openssh-server \
     curl \
@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     ca-certificates \
     gnupg \
+    build-essential \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure bashrc for Ghostty terminal support

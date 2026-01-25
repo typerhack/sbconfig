@@ -44,6 +44,15 @@ pub fn get_public_ip() -> Result<String> {
     }
 }
 
+/// Check if a command exists on PATH
+pub fn command_exists(name: &str) -> bool {
+    Command::new("which")
+        .arg(name)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 /// Check if a port is available
 pub fn is_port_available(port: u16) -> bool {
     use std::net::TcpListener;

@@ -3,8 +3,10 @@
 
 mod config;
 mod detect;
+mod install;
 mod service;
 
 pub use config::*;
 pub use detect::*;
+pub use install::*;
 pub use service::*;

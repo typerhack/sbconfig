@@ -11,6 +11,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use rand::RngCore;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +144,54 @@ struct LogsState {
 }
 
 #[derive(Debug, Clone)]
+struct SingboxTaskState {
+    title: String,
+    running: bool,
+    logs: Vec<String>,
+    result: Option<String>,
+    error: Option<String>,
+    step: usize,
+    total_steps: usize,
+}
+
+#[derive(Debug, Clone)]
+enum SingboxTaskEvent {
+    Log(String),
+    Progress { step: usize, total: usize },
+    Done(String),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SingboxAction {
+    Start,
+    Stop,
+    Restart,
+    Enable,
+    Disable,
+    Refresh,
+    Install,
+    Reinstall,
+    Uninstall,
+}
+
+impl SingboxAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Start => "Start Service",
+            Self::Stop => "Stop Service",
+            Self::Restart => "Restart Service",
+            Self::Enable => "Enable Service",
+            Self::Disable => "Disable Service",
+            Self::Refresh => "Refresh Status",
+            Self::Install => "Install sing-box",
+            Self::Reinstall => "Reinstall sing-box",
+            Self::Uninstall => "Uninstall sing-box",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct InputField {
     value: String,
     cursor: usize,
@@ -178,6 +228,52 @@ impl InputField {
             self.value.remove(self.cursor);
         }
     }
+}
+
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let next_len = if current.is_empty() {
+            word.len()
+        } else {
+            current.len() + 1 + word.len()
+        };
+        if next_len > width && !current.is_empty() {
+            lines.push(current.clone());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 /// Menu items on the dashboard
@@ -258,6 +354,12 @@ pub struct App {
     settings_edit_state: SettingsEditState,
     logs_state: LogsState,
     status_message: Option<String>,
+    singbox_action_index: usize,
+    singbox_message: Option<String>,
+    singbox_status_output: Option<String>,
+    singbox_progress: Option<String>,
+    singbox_task: Option<SingboxTaskState>,
+    singbox_task_rx: Option<Receiver<SingboxTaskEvent>>,
 }
 
 impl App {
@@ -338,6 +440,12 @@ impl App {
                 scroll: 0,
             },
             status_message: None,
+            singbox_action_index: 0,
+            singbox_message: None,
+            singbox_status_output: None,
+            singbox_progress: None,
+            singbox_task: None,
+            singbox_task_rx: None,
         }
     }
 
@@ -410,7 +518,7 @@ impl App {
                 " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Continue  [Esc] Back "
             }
             Screen::Dashboard => " [Up/Down] Navigate  [Enter] Select  [q] Quit ",
-            Screen::SingboxStatus => " [1] Start  [2] Stop  [3] Restart  [r] Refresh  [Esc] Back ",
+            Screen::SingboxStatus => " [Up/Down] Navigate  [Enter] Run  [1-9] Quick  [Esc] Back ",
             Screen::Users => {
                 " [Up/Down] Navigate  [a] Add  [d] Delete  [Enter] Toggle  [Esc] Back "
             }
@@ -429,6 +537,10 @@ impl App {
             .style(Style::default().fg(Color::DarkGray))
             .block(Block::default().borders(Borders::ALL));
         frame.render_widget(footer, chunks[2]);
+
+        if let Some(task) = &self.singbox_task {
+            self.draw_task_modal(frame, task);
+        }
     }
 
     fn draw_dashboard(&self, frame: &mut Frame, area: Rect) {
@@ -695,6 +807,12 @@ impl App {
     }
 
     fn draw_singbox_status(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(area);
+        let wrap_width = chunks[1].width.saturating_sub(4) as usize;
+
         let info = singbox::detect_singbox().unwrap_or(singbox::SingBoxInfo {
             installed: false,
             path: None,
@@ -707,7 +825,39 @@ impl App {
             ServiceStatus::NotFound => "Not Found",
             ServiceStatus::Unknown => "Unknown",
         };
-        let content = vec![
+
+        let actions = self.singbox_actions(&info, status);
+        let selected_index = if self.singbox_action_index < actions.len() {
+            self.singbox_action_index
+        } else {
+            0
+        };
+        let actions: Vec<ListItem> = actions
+            .iter()
+            .enumerate()
+            .map(|(index, (action, enabled))| {
+                let prefix = if index == selected_index && *enabled {
+                    "> "
+                } else {
+                    "  "
+                };
+                let style = if *enabled {
+                    Style::default()
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{}", prefix, action.label()),
+                    style,
+                )))
+            })
+            .collect();
+
+        let action_block = Block::default().borders(Borders::ALL).title(" Actions ");
+        let action_list = List::new(actions).block(action_block);
+        frame.render_widget(action_list, chunks[0]);
+
+        let mut status_lines = vec![
             Line::from(""),
             Line::from(format!(
                 " Installation: {}",
@@ -727,18 +877,136 @@ impl App {
             )),
             Line::from(format!(" Service:      {}", status_text)),
             Line::from(""),
-            Line::from(" Actions:"),
-            Line::from("  [1] Start  [2] Stop  [3] Restart  [r] Refresh"),
-            Line::from(""),
-            Line::from(" Install/update sing-box manually:"),
-            Line::from("  bash <(curl -fsSL https://sing-box.app/deb-install.sh)"),
-            Line::from("  https://sing-box.sagernet.org/installation/package-manager/"),
         ];
+
+        if info.installed {
+            if status == ServiceStatus::NotFound {
+                status_lines.push(Line::from(" Systemd service: Not Found"));
+                status_lines.push(Line::from(""));
+                status_lines.push(Line::from(" To activate systemd service:"));
+                status_lines.push(Line::from("  sudo systemctl enable --now sing-box"));
+                status_lines.push(Line::from(""));
+                status_lines.push(Line::from(" If the unit is missing, reinstall via:"));
+                status_lines.push(Line::from(
+                    "  bash <(curl -fsSL https://sing-box.app/deb-install.sh)",
+                ));
+                status_lines.push(Line::from(
+                    "  https://sing-box.sagernet.org/installation/package-manager/",
+                ));
+                status_lines.push(Line::from(""));
+                status_lines.push(Line::from(" Uninstall: use your package manager."));
+            } else {
+                status_lines.push(Line::from(" Systemd service: Available (OK)"));
+                status_lines.push(Line::from(""));
+                status_lines.push(Line::from(" Uninstall: use your package manager."));
+            }
+        } else {
+            status_lines.push(Line::from(" sing-box is not installed."));
+            status_lines.push(Line::from(""));
+            status_lines.push(Line::from(" Install sing-box via official docs:"));
+            status_lines.push(Line::from(
+                "  bash <(curl -fsSL https://sing-box.app/deb-install.sh)",
+            ));
+            status_lines.push(Line::from(
+                "  https://sing-box.sagernet.org/installation/package-manager/",
+            ));
+        }
+
+        if let Some(progress) = &self.singbox_progress {
+            status_lines.push(Line::from(""));
+            status_lines.push(Line::from(format!(" Progress: {}", progress)));
+        }
+
+        if let Some(output) = &self.singbox_status_output {
+            status_lines.push(Line::from(""));
+            status_lines.push(Line::from(" Service Output:"));
+            let mut lines: Vec<&str> = output.lines().collect();
+            if lines.len() > 6 {
+                lines = lines[lines.len() - 6..].to_vec();
+            }
+            for line in lines {
+                if wrap_width > 0 {
+                    for wrapped in wrap_text(line, wrap_width.saturating_sub(2)) {
+                        status_lines.push(Line::from(format!("  {}", wrapped)));
+                    }
+                } else {
+                    status_lines.push(Line::from(format!("  {}", line)));
+                }
+            }
+        }
+
+        let mut right_lines = status_lines;
+        if let Some(message) = &self.singbox_message {
+            right_lines.push(Line::from(""));
+            let wrapped = wrap_text(message, wrap_width.max(10));
+            if wrapped.is_empty() {
+                right_lines.push(Line::from(Span::styled(
+                    message.clone(),
+                    Style::default().fg(Color::Cyan),
+                )));
+            } else {
+                for line in wrapped {
+                    right_lines.push(Line::from(Span::styled(
+                        line,
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
+            }
+        }
+
+        let status_block = Block::default().borders(Borders::ALL).title(" Status ");
+        let status_paragraph = Paragraph::new(right_lines).block(status_block);
+        frame.render_widget(status_paragraph, chunks[1]);
+    }
+
+    fn draw_task_modal(&self, frame: &mut Frame, task: &SingboxTaskState) {
+        let area = frame.area();
+        let popup_area = centered_rect(80, 70, area);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" sing-box Status ");
-        let paragraph = Paragraph::new(content).block(block);
-        frame.render_widget(paragraph, area);
+            .title(format!(" {} ", task.title));
+        frame.render_widget(Clear, popup_area);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let mut lines = Vec::new();
+        let status_line = if task.running {
+            "Status: Running"
+        } else if task.error.is_some() {
+            "Status: Failed"
+        } else {
+            "Status: Complete"
+        };
+        lines.push(Line::from(status_line));
+        lines.push(Line::from(format!(
+            "Progress: {}/{}",
+            task.step, task.total_steps
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from("Logs:"));
+        let max_logs = inner.height.saturating_sub(6) as usize;
+        let start = task.logs.len().saturating_sub(max_logs);
+        for line in task.logs.iter().skip(start) {
+            lines.push(Line::from(line.clone()));
+        }
+        if let Some(result) = &task.result {
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!("Result: {}", result)));
+        }
+        if let Some(err) = &task.error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("Error: {}", err),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        if !task.running {
+            lines.push(Line::from(""));
+            lines.push(Line::from("Press [Esc] to close."));
+        }
+
+        let paragraph = Paragraph::new(lines).block(Block::default());
+        frame.render_widget(paragraph, inner);
     }
 
     fn draw_user_create(&self, frame: &mut Frame, area: Rect) {
@@ -1143,6 +1411,10 @@ impl App {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+                        self.running = false;
+                        return Ok(());
+                    }
                     match self.screen {
                         Screen::Setup => self.handle_setup_input(key.code),
                         Screen::Dashboard => self.handle_dashboard_input(key.code),
@@ -1160,6 +1432,7 @@ impl App {
                 }
             }
         }
+        self.drain_singbox_task_events();
         Ok(())
     }
 
@@ -1323,18 +1596,68 @@ impl App {
     }
 
     fn handle_singbox_status_input(&mut self, key: KeyCode) {
+        if let Some(task) = &self.singbox_task {
+            if task.running {
+                return;
+            }
+            if matches!(key, KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B')) {
+                self.singbox_task = None;
+                return;
+            }
+        }
+        let info = singbox::detect_singbox().unwrap_or(singbox::SingBoxInfo {
+            installed: false,
+            path: None,
+            version: None,
+        });
+        let status = singbox::get_service_status().unwrap_or(ServiceStatus::Unknown);
+        let actions = self.singbox_actions(&info, status);
+        let action_count = actions.len();
+        if action_count == 0 {
+            return;
+        }
+        if self.singbox_action_index >= action_count {
+            self.singbox_action_index = 0;
+        }
+        if !actions[self.singbox_action_index].1 {
+            if let Some(next) = self.next_enabled_action_index(&actions, self.singbox_action_index, 1) {
+                self.singbox_action_index = next;
+            }
+        }
         match key {
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
-            KeyCode::Char('1') => {
-                let _ = singbox::start_service();
+            KeyCode::Up => {
+                if let Some(prev) =
+                    self.next_enabled_action_index(&actions, self.singbox_action_index, -1)
+                {
+                    self.singbox_action_index = prev;
+                }
             }
-            KeyCode::Char('2') => {
-                let _ = singbox::stop_service();
+            KeyCode::Down => {
+                if let Some(next) =
+                    self.next_enabled_action_index(&actions, self.singbox_action_index, 1)
+                {
+                    self.singbox_action_index = next;
+                }
             }
-            KeyCode::Char('3') => {
-                let _ = singbox::restart_service();
+            KeyCode::Enter => {
+                let (action, enabled) = actions[self.singbox_action_index];
+                if enabled {
+                    self.run_singbox_action(action);
+                }
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {}
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                let index = (ch as usize).saturating_sub('1' as usize);
+                if index < actions.len() {
+                    let (action, enabled) = actions[index];
+                    if enabled {
+                        self.run_singbox_action(action);
+                    }
+                }
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.run_singbox_action(SingboxAction::Refresh);
+            }
             _ => {}
         }
     }
@@ -1598,6 +1921,10 @@ impl App {
         if self.screen != next {
             self.screen_stack.push(self.screen);
             self.screen = next;
+            if self.screen == Screen::SingboxStatus {
+                self.singbox_message = None;
+                self.refresh_singbox_status_output();
+            }
         }
     }
 
@@ -1710,6 +2037,201 @@ impl App {
                 self.status_message = Some(err.to_string());
             }
         }
+    }
+
+    fn run_singbox_action(&mut self, action: SingboxAction) {
+        self.singbox_progress = None;
+        let result = match action {
+            SingboxAction::Start => singbox::start_service().map(|_| "Service started"),
+            SingboxAction::Stop => singbox::stop_service().map(|_| "Service stopped"),
+            SingboxAction::Restart => singbox::restart_service().map(|_| "Service restarted"),
+            SingboxAction::Enable => singbox::enable_service().map(|_| "Service enabled"),
+            SingboxAction::Disable => singbox::disable_service().map(|_| "Service disabled"),
+            SingboxAction::Refresh => Ok("Status refreshed"),
+            SingboxAction::Install => {
+                self.start_singbox_task("Install sing-box", singbox::install_steps);
+                return;
+            }
+            SingboxAction::Reinstall => {
+                self.start_singbox_task("Reinstall sing-box", singbox::reinstall_steps);
+                return;
+            }
+            SingboxAction::Uninstall => {
+                self.start_singbox_task("Uninstall sing-box", singbox::uninstall_steps);
+                return;
+            }
+        };
+
+        match result {
+            Ok(message) => self.singbox_message = Some(message.to_string()),
+            Err(err) => self.singbox_message = Some(err.to_string()),
+        }
+
+        self.refresh_singbox_status_output();
+    }
+
+    fn refresh_singbox_status_output(&mut self) {
+        match singbox::get_service_status_output(8) {
+            Ok(output) => {
+                if output.is_empty() {
+                    self.singbox_status_output = None;
+                } else {
+                    self.singbox_status_output = Some(output);
+                }
+            }
+            Err(err) => {
+                self.singbox_status_output = Some(err.to_string());
+            }
+        }
+    }
+
+    fn start_singbox_task<F>(&mut self, title: &str, steps_fn: F)
+    where
+        F: FnOnce() -> Result<Vec<singbox::CommandSpec>> + Send + 'static,
+    {
+        if self.singbox_task.as_ref().map_or(false, |t| t.running) {
+            return;
+        }
+
+        let steps = match steps_fn() {
+            Ok(steps) => steps,
+            Err(err) => {
+                self.singbox_task = Some(SingboxTaskState {
+                    title: title.to_string(),
+                    running: false,
+                    logs: Vec::new(),
+                    result: None,
+                    error: Some(err.to_string()),
+                    step: 0,
+                    total_steps: 0,
+                });
+                return;
+            }
+        };
+
+        let total_steps = steps.len();
+        let (tx, rx) = mpsc::channel::<SingboxTaskEvent>();
+        self.singbox_task = Some(SingboxTaskState {
+            title: title.to_string(),
+            running: true,
+            logs: Vec::new(),
+            result: None,
+            error: None,
+            step: 0,
+            total_steps,
+        });
+        self.singbox_task_rx = Some(rx);
+
+        thread::spawn(move || {
+            for (index, step) in steps.into_iter().enumerate() {
+                let _ = tx.send(SingboxTaskEvent::Progress {
+                    step: index + 1,
+                    total: total_steps,
+                });
+                let _ = tx.send(SingboxTaskEvent::Log(format!(
+                    "[{}/{}] $ {}",
+                    index + 1,
+                    total_steps,
+                    step.display
+                )));
+                match singbox::run_command_spec(&step) {
+                    Ok(output) => {
+                        if !output.is_empty() {
+                            for line in output.lines() {
+                                let _ = tx.send(SingboxTaskEvent::Log(line.to_string()));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.send(SingboxTaskEvent::Error(err.to_string()));
+                        return;
+                    }
+                }
+            }
+            let _ = tx.send(SingboxTaskEvent::Done("Completed".to_string()));
+        });
+    }
+
+    fn drain_singbox_task_events(&mut self) {
+        let rx = match &self.singbox_task_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+        let mut done = false;
+        while let Ok(event) = rx.try_recv() {
+            if let Some(task) = &mut self.singbox_task {
+                match event {
+                    SingboxTaskEvent::Log(line) => {
+                        task.logs.push(line);
+                        if task.logs.len() > 200 {
+                            let excess = task.logs.len() - 200;
+                            task.logs.drain(0..excess);
+                        }
+                    }
+                    SingboxTaskEvent::Progress { step, total } => {
+                        task.step = step;
+                        task.total_steps = total;
+                    }
+                    SingboxTaskEvent::Done(message) => {
+                        task.running = false;
+                        task.result = Some(message);
+                        done = true;
+                    }
+                    SingboxTaskEvent::Error(err) => {
+                        task.running = false;
+                        task.error = Some(err);
+                        done = true;
+                    }
+                }
+            }
+        }
+
+        if done {
+            self.singbox_task_rx = None;
+            self.refresh_singbox_status_output();
+        }
+    }
+
+    fn singbox_actions(
+        &self,
+        info: &singbox::SingBoxInfo,
+        status: ServiceStatus,
+    ) -> Vec<(SingboxAction, bool)> {
+        let installed = info.installed;
+        let service_available = status != ServiceStatus::NotFound;
+
+        vec![
+            (SingboxAction::Start, installed && service_available),
+            (SingboxAction::Stop, installed && service_available),
+            (SingboxAction::Restart, installed && service_available),
+            (SingboxAction::Enable, installed && service_available),
+            (SingboxAction::Disable, installed && service_available),
+            (SingboxAction::Refresh, true),
+            (SingboxAction::Install, !installed),
+            (SingboxAction::Reinstall, installed && status == ServiceStatus::NotFound),
+            (SingboxAction::Uninstall, installed),
+        ]
+    }
+
+    fn next_enabled_action_index(
+        &self,
+        actions: &[(SingboxAction, bool)],
+        current: usize,
+        step: isize,
+    ) -> Option<usize> {
+        if actions.is_empty() {
+            return None;
+        }
+        let len = actions.len() as isize;
+        let mut offset = 0;
+        while offset < len {
+            let idx = ((current as isize + step * (offset + 1)).rem_euclid(len)) as usize;
+            if actions[idx].1 {
+                return Some(idx);
+            }
+            offset += 1;
+        }
+        None
     }
 
     fn get_or_create_encryption_key(&self) -> Result<String> {

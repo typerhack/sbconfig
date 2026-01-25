@@ -97,6 +97,42 @@ pub fn restart_service() -> Result<()> {
     Ok(())
 }
 
+/// Enable sing-box service
+pub fn enable_service() -> Result<()> {
+    let output = Command::new("systemctl")
+        .args(["enable", "--now", "sing-box"])
+        .output()
+        .map_err(|e| AppError::System(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::SingBox(format!(
+            "Failed to enable service: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Disable sing-box service
+pub fn disable_service() -> Result<()> {
+    let output = Command::new("systemctl")
+        .args(["disable", "--now", "sing-box"])
+        .output()
+        .map_err(|e| AppError::System(e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::SingBox(format!(
+            "Failed to disable service: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
 /// Reload sing-box configuration
 pub fn reload_service() -> Result<()> {
     let output = Command::new("systemctl")
@@ -110,4 +146,24 @@ pub fn reload_service() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn get_service_status_output(lines: usize) -> Result<String> {
+    let output = Command::new("systemctl")
+        .args([
+            "status",
+            "sing-box",
+            "--no-pager",
+            &format!("--lines={}", lines),
+        ])
+        .output()
+        .map_err(|e| AppError::System(e.to_string()))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else if !output.stderr.is_empty() {
+        Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    } else {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 }

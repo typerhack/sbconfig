@@ -3,8 +3,10 @@
 
 mod database;
 mod encryption;
+mod migrations;
 mod models;
 mod queries;
+mod schema;
 
 pub use database::Database;
 pub use models::*;

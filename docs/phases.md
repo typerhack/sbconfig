@@ -440,6 +440,9 @@ echo "=== Phase 2 Complete ==="
 ### Objective
 Implement SQLite database with all tables, migrations, and CRUD operations.
 
+### Status
+Complete (verified 2026-01-25 via lab-build.sh, init-db, and schema checks).
+
 ### Deliverables
 
 | ID | Task | Description |
@@ -1255,9 +1258,9 @@ echo "=== PROJECT READY FOR RELEASE ==="
 
 | Phase | Name | Tests | Status |
 |-------|------|-------|--------|
-| 1 | Lab Environment Setup | T1.1-T1.9 | [ ] Pending |
-| 2 | Project Setup | T2.1-T2.7 | [ ] Pending |
-| 3 | Database Layer | T3.1-T3.13 | [ ] Pending |
+| 1 | Lab Environment Setup | T1.1-T1.9 | [x] Complete |
+| 2 | Project Setup | T2.1-T2.7 | [x] Complete |
+| 3 | Database Layer | T3.1-T3.13 | [x] Complete |
 | 4 | SSH Module | T4.1-T4.10 | [ ] Pending |
 | 5 | sing-box Module | T5.1-T5.9 | [ ] Pending |
 | 6 | Core TUI Framework | T6.1-T6.10 | [ ] Pending |

@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long)]
     dev: bool,
 
+    /// Initialize the database and exit
+    #[arg(long, conflicts_with = "command")]
+    init_db: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -41,6 +45,9 @@ enum Commands {
 
     /// Show version information
     Version,
+
+    /// Initialize the database and exit
+    InitDb,
 }
 
 fn main() {
@@ -50,11 +57,16 @@ fn main() {
     let cli = Cli::parse();
 
     // Run the appropriate command
-    let result = match cli.command {
-        Some(Commands::Status) => run_status(),
-        Some(Commands::Users) => run_users(&cli.database),
-        Some(Commands::Version) => run_version(),
-        Some(Commands::Tui) | None => run_tui(&cli.database, cli.dev),
+    let result = if cli.init_db {
+        run_init_db(&cli.database)
+    } else {
+        match cli.command {
+            Some(Commands::Status) => run_status(),
+            Some(Commands::Users) => run_users(&cli.database),
+            Some(Commands::Version) => run_version(),
+            Some(Commands::InitDb) => run_init_db(&cli.database),
+            Some(Commands::Tui) | None => run_tui(&cli.database, cli.dev),
+        }
     };
 
     if let Err(e) = result {
@@ -153,5 +165,17 @@ fn run_version() -> error::Result<()> {
     println!("sing-box SSH Proxy Manager");
     println!("https://github.com/typerhack/sbconfig");
 
+    Ok(())
+}
+
+/// Initialize database and exit
+fn run_init_db(db_path: &PathBuf) -> error::Result<()> {
+    if let Some(parent) = db_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let _db = db::Database::open(db_path)?;
+    println!("Database initialized at {}", db_path.display());
     Ok(())
 }

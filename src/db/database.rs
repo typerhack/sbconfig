@@ -2,6 +2,7 @@
 // Database connection and initialization
 
 use crate::error::Result;
+use super::migrations;
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -13,7 +14,7 @@ impl Database {
     /// Open or create database at the given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.init()?;
         Ok(db)
     }
@@ -22,15 +23,14 @@ impl Database {
     #[allow(dead_code)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.init()?;
         Ok(db)
     }
 
     /// Initialize database schema
-    fn init(&self) -> Result<()> {
-        self.conn.execute_batch(include_str!("schema.sql"))?;
-        Ok(())
+    fn init(&mut self) -> Result<()> {
+        migrations::run_migrations(&mut self.conn)
     }
 
     /// Get a reference to the connection

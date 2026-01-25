@@ -218,6 +218,10 @@ cargo test db::
 cargo test ui::
 ```
 
+### Lab Testing Rule
+- Use the existing lab scripts for lab validation: `lab/scripts/lab-build.sh`, `lab/scripts/lab-deploy.sh`, and `lab/scripts/lab-test.sh`.
+- Do not pull or run ad hoc Docker images for testing unless the user explicitly requests it.
+
 ## Building
 
 ```bash

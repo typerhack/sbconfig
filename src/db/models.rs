@@ -65,3 +65,13 @@ pub struct LogEntry {
     pub message: String,
     pub created_at: String,
 }
+
+/// Active user connection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserConnection {
+    pub id: i64,
+    pub user_id: i64,
+    pub connected_at: String,
+    pub remote_ip: Option<String>,
+    pub is_active: bool,
+}

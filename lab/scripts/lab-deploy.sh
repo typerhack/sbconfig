@@ -25,11 +25,18 @@ if ! docker ps | grep -q sbconfig-lab; then
     exit 1
 fi
 
-echo "Building sbconfig for Linux (x86_64-unknown-linux-musl)..."
-cross build --release --target x86_64-unknown-linux-musl
+TARGET="x86_64-unknown-linux-musl"
+EXTRA_FLAGS=""
+HOST_ARCH="$(uname -m)"
+if [[ "$HOST_ARCH" != "x86_64" ]]; then
+    EXTRA_FLAGS="--force-non-host"
+fi
+
+echo "Building sbconfig for Linux ($TARGET)..."
+cross build --release --target "$TARGET" $EXTRA_FLAGS
 
 echo "Deploying to lab container..."
-docker cp target/x86_64-unknown-linux-musl/release/sbconfig sbconfig-lab:/usr/local/bin/
+docker cp "target/$TARGET/release/sbconfig" sbconfig-lab:/usr/local/bin/
 
 echo "Setting permissions..."
 docker exec sbconfig-lab chmod +x /usr/local/bin/sbconfig

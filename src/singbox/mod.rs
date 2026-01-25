@@ -5,4 +5,6 @@ mod config;
 mod detect;
 mod service;
 
+pub use config::*;
 pub use detect::*;
+pub use service::*;

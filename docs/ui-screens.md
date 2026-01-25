@@ -76,7 +76,7 @@ Shown on first launch to configure essential settings.
 │   │   bash <(curl -fsSL https://sing-box.app/deb-install.sh)            ││
 │   │                                                                      ││
 │   │   For other methods, visit:                                         ││
-│   │   https://sing-box.sagernet.org/installation/                       ││
+│   │   https://sing-box.sagernet.org/installation/package-manager/       ││
 │   │                                                                      ││
 │   │   After installation, press [r] to re-check.                        ││
 │   │                                                                      ││

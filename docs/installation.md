@@ -276,7 +276,7 @@ sbconfig does **NOT** install sing-box automatically. You must install it manual
    - Download the appropriate binary for your architecture
 
 **Official Documentation:**
-- [sing-box Installation Guide](https://sing-box.sagernet.org/installation/)
+- [sing-box Package Manager Install](https://sing-box.sagernet.org/installation/package-manager/)
 - [sing-box GitHub](https://github.com/SagerNet/sing-box)
 
 ## Updating sbconfig
@@ -620,7 +620,7 @@ Warning: sing-box is not installed
 ```
 
 **Solution**: Install sing-box manually following the official guide:
-- https://sing-box.sagernet.org/installation/
+- https://sing-box.sagernet.org/installation/package-manager/
 
 ### SSH Port Already in Use
 

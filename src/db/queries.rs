@@ -221,14 +221,17 @@ impl Database {
             "SELECT user_id, max_connections, traffic_quota_bytes, expires_at
              FROM user_limits WHERE user_id = ?",
         )?;
-        let result = stmt.query_row(params![user_id], row_to_user_limits).optional()?;
+        let result = stmt
+            .query_row(params![user_id], row_to_user_limits)
+            .optional()?;
         Ok(result)
     }
 
     pub fn delete_user_limits(&self, user_id: i64) -> Result<bool> {
-        let rows = self
-            .conn()
-            .execute("DELETE FROM user_limits WHERE user_id = ?", params![user_id])?;
+        let rows = self.conn().execute(
+            "DELETE FROM user_limits WHERE user_id = ?",
+            params![user_id],
+        )?;
         Ok(rows > 0)
     }
 
@@ -280,11 +283,7 @@ impl Database {
 
     // User connections
 
-    pub fn add_user_connection(
-        &self,
-        user_id: i64,
-        remote_ip: Option<&str>,
-    ) -> Result<i64> {
+    pub fn add_user_connection(&self, user_id: i64, remote_ip: Option<&str>) -> Result<i64> {
         self.conn().execute(
             "INSERT INTO user_connections (user_id, remote_ip) VALUES (?, ?)",
             params![user_id, remote_ip],
@@ -377,10 +376,8 @@ impl Database {
     // Sessions
 
     pub fn start_session(&self, id: &str) -> Result<()> {
-        self.conn().execute(
-            "INSERT INTO sessions (id) VALUES (?)",
-            params![id],
-        )?;
+        self.conn()
+            .execute("INSERT INTO sessions (id) VALUES (?)", params![id])?;
         Ok(())
     }
 
@@ -393,9 +390,9 @@ impl Database {
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT id, started_at, ended_at FROM sessions WHERE id = ?",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT id, started_at, ended_at FROM sessions WHERE id = ?")?;
         let result = stmt.query_row(params![id], row_to_session).optional()?;
         Ok(result)
     }

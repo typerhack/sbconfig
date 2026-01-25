@@ -184,6 +184,9 @@ Built-in routing configurations for common use cases:
 - No hardcoded credentials
 - Validate all user input
 
+### Versioning Rule
+- Always bump the `Cargo.toml` package version when shipping user-facing changes.
+
 ## Common Tasks
 
 ### Adding a New Screen

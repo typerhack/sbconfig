@@ -1,8 +1,8 @@
 // src/db/database.rs
 // Database connection and initialization
 
-use crate::error::Result;
 use super::migrations;
+use crate::error::Result;
 use rusqlite::Connection;
 use std::path::Path;
 

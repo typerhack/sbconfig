@@ -169,12 +169,27 @@ pub fn setup_authorized_keys(username: &str, public_key: &str) -> Result<()> {
     // Create .ssh directory
     fs::create_dir_all(&ssh_dir).map_err(AppError::Io)?;
 
-    // Write authorized_keys
-    fs::write(&auth_keys_path, format!("{}\n", public_key)).map_err(AppError::Io)?;
+    let mut needs_append = true;
+    if let Ok(existing) = fs::read_to_string(&auth_keys_path) {
+        let existing_keys = existing.lines().map(str::trim).collect::<Vec<_>>();
+        needs_append = !existing_keys.iter().any(|line| line == &public_key.trim());
+    }
+
+    if needs_append {
+        let mut content = String::new();
+        if let Ok(existing) = fs::read_to_string(&auth_keys_path) {
+            content.push_str(existing.trim_end());
+            if !content.is_empty() {
+                content.push('\n');
+            }
+        }
+        content.push_str(public_key.trim());
+        content.push('\n');
+        fs::write(&auth_keys_path, content).map_err(AppError::Io)?;
+    }
 
     // Set permissions
-    fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700))
-        .map_err(AppError::Io)?;
+    fs::set_permissions(&ssh_dir, fs::Permissions::from_mode(0o700)).map_err(AppError::Io)?;
     fs::set_permissions(&auth_keys_path, fs::Permissions::from_mode(0o600))
         .map_err(AppError::Io)?;
 

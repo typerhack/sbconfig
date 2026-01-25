@@ -9,4 +9,5 @@ mod queries;
 mod schema;
 
 pub use database::Database;
+pub use encryption::{decrypt, encrypt};
 pub use models::*;

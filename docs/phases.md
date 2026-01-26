@@ -350,7 +350,7 @@ echo "  Reset lab:    ./lab/scripts/lab-reset.sh"
 Initialize Rust project with all dependencies and basic structure.
 
 ### Status
-Complete (Phase 2 checks: build/test/clippy/fmt/version/help verified 2026-01-24; lab run pending if required).
+Complete (Phase 2 checks: build/test/clippy/fmt/version/help verified 2026-01-26; lab run verified 2026-01-26).
 
 ### Deliverables
 

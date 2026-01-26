@@ -518,7 +518,9 @@ impl App {
                 " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Continue  [Esc] Back "
             }
             Screen::Dashboard => " [Up/Down] Navigate  [Enter] Select  [q] Quit ",
-            Screen::SingboxStatus => " [Up/Down] Navigate  [Enter] Run  [1-9] Quick  [Esc] Back ",
+            Screen::SingboxStatus => {
+                " [Up/Down] Navigate  [Enter] Run  [1-9] Quick  [Esc] Back  [q] Quit "
+            }
             Screen::Users => {
                 " [Up/Down] Navigate  [a] Add  [d] Delete  [Enter] Toggle  [Esc] Back "
             }
@@ -857,36 +859,43 @@ impl App {
         let action_list = List::new(actions).block(action_block);
         frame.render_widget(action_list, chunks[0]);
 
+        let heading_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+
         let mut status_lines = vec![
-            Line::from(""),
+            Line::from(Span::styled(" Installation", heading_style)),
             Line::from(format!(
-                " Installation: {}",
-                if info.installed {
-                    "Installed"
-                } else {
-                    "Not Found"
-                }
+                "  Status:     {}",
+                if info.installed { "Installed" } else { "Not Found" }
             )),
             Line::from(format!(
-                " Version:      {}",
+                "  Version:    {}",
                 info.version.unwrap_or_else(|| "-".to_string())
             )),
             Line::from(format!(
-                " Path:         {}",
+                "  Path:       {}",
                 info.path.unwrap_or_else(|| "-".to_string())
             )),
-            Line::from(format!(" Service:      {}", status_text)),
+            Line::from(""),
+            Line::from(Span::styled(" Service", heading_style)),
+            Line::from(format!("  State:      {}", status_text)),
+            Line::from(format!(
+                "  Systemd:    {}",
+                match status {
+                    ServiceStatus::NotFound => "Not Found",
+                    _ => "Available (OK)",
+                }
+            )),
             Line::from(""),
         ];
 
         if info.installed {
             if status == ServiceStatus::NotFound {
-                status_lines.push(Line::from(" Systemd service: Not Found"));
-                status_lines.push(Line::from(""));
-                status_lines.push(Line::from(" To activate systemd service:"));
+                status_lines.push(Line::from(Span::styled(" Hints", heading_style)));
+                status_lines.push(Line::from("  Activate systemd service:"));
                 status_lines.push(Line::from("  sudo systemctl enable --now sing-box"));
-                status_lines.push(Line::from(""));
-                status_lines.push(Line::from(" If the unit is missing, reinstall via:"));
+                status_lines.push(Line::from("  If the unit is missing, reinstall via:"));
                 status_lines.push(Line::from(
                     "  bash <(curl -fsSL https://sing-box.app/deb-install.sh)",
                 ));
@@ -894,16 +903,14 @@ impl App {
                     "  https://sing-box.sagernet.org/installation/package-manager/",
                 ));
                 status_lines.push(Line::from(""));
-                status_lines.push(Line::from(" Uninstall: use your package manager."));
+                status_lines.push(Line::from("  Uninstall: use your package manager."));
             } else {
-                status_lines.push(Line::from(" Systemd service: Available (OK)"));
-                status_lines.push(Line::from(""));
-                status_lines.push(Line::from(" Uninstall: use your package manager."));
+                status_lines.push(Line::from(Span::styled(" Hints", heading_style)));
+                status_lines.push(Line::from("  Uninstall: use your package manager."));
             }
         } else {
-            status_lines.push(Line::from(" sing-box is not installed."));
-            status_lines.push(Line::from(""));
-            status_lines.push(Line::from(" Install sing-box via official docs:"));
+            status_lines.push(Line::from(Span::styled(" Hints", heading_style)));
+            status_lines.push(Line::from("  Install sing-box via official docs:"));
             status_lines.push(Line::from(
                 "  bash <(curl -fsSL https://sing-box.app/deb-install.sh)",
             ));
@@ -914,12 +921,13 @@ impl App {
 
         if let Some(progress) = &self.singbox_progress {
             status_lines.push(Line::from(""));
-            status_lines.push(Line::from(format!(" Progress: {}", progress)));
+            status_lines.push(Line::from(Span::styled(" Progress", heading_style)));
+            status_lines.push(Line::from(format!("  {}", progress)));
         }
 
         if let Some(output) = &self.singbox_status_output {
             status_lines.push(Line::from(""));
-            status_lines.push(Line::from(" Service Output:"));
+            status_lines.push(Line::from(Span::styled(" Service Output", heading_style)));
             let mut lines: Vec<&str> = output.lines().collect();
             if lines.len() > 6 {
                 lines = lines[lines.len() - 6..].to_vec();
@@ -938,16 +946,17 @@ impl App {
         let mut right_lines = status_lines;
         if let Some(message) = &self.singbox_message {
             right_lines.push(Line::from(""));
+            right_lines.push(Line::from(Span::styled(" Last action", heading_style)));
             let wrapped = wrap_text(message, wrap_width.max(10));
             if wrapped.is_empty() {
                 right_lines.push(Line::from(Span::styled(
-                    message.clone(),
+                    format!("  {}", message),
                     Style::default().fg(Color::Cyan),
                 )));
             } else {
                 for line in wrapped {
                     right_lines.push(Line::from(Span::styled(
-                        line,
+                        format!("  {}", line),
                         Style::default().fg(Color::Cyan),
                     )));
                 }

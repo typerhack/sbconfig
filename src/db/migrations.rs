@@ -11,10 +11,19 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: BASE_SCHEMA,
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: BASE_SCHEMA,
+    },
+    Migration {
+        version: 2,
+        sql: r#"
+            ALTER TABLE users ADD COLUMN email TEXT;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        "#,
+    },
+];
 
 pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     // Ensure migrations table exists before tracking versions.

@@ -7,7 +7,7 @@
 | Category | Features |
 |----------|----------|
 | sing-box Management | Detection (not install), start/stop, status, version check |
-| User Management | Create, list, delete, enable/disable, regenerate keys |
+| User Management | Create, list, delete, enable/disable, regenerate keys, email lookup |
 | **Connection Limits** | Max concurrent connections per user, real-time tracking |
 | **Traffic Quota** | Data transfer limits, usage tracking, auto-disable on exceed |
 | Config Generation | JSON export, URI generation, QR codes, multi-platform |
@@ -77,18 +77,21 @@
 - [ ] Display all users in table format
 - [ ] Show user ID
 - [ ] Show username
+- [ ] Show email (if set)
 - [ ] Show creation date
-- [ ] Show SSH port assignment
 - [ ] Show active/disabled status
 - [ ] Show number of generated configs
 - [ ] Sort by different columns
 - [ ] Filter active/disabled users
+ - [ ] Search by username or email
 
 ### Create User
 - [ ] Auto-generate unique username (e.g., `user_abc123`)
 - [ ] Allow custom username input
 - [ ] Validate username (alphanumeric, no spaces)
 - [ ] Check for duplicate usernames
+- [ ] Optional email input (unique when present)
+- [ ] Validate email format (basic)
 - [ ] Generate ED25519 SSH key pair automatically
 - [ ] Create system user on the OS with `/sbin/nologin` shell (no interactive login)
 - [ ] Set up SSH authorized_keys for the user
@@ -106,7 +109,7 @@
 
 ### Edit User
 - [ ] Rename user (with system user rename)
-- [ ] Change SSH port assignment
+- [ ] Update email
 - [ ] Add notes/description
 
 ### User Status
@@ -141,6 +144,10 @@
 - [ ] Reset quota manually or automatically
 - [ ] Traffic usage history and graphs
 - [ ] Per-user quota override
+
+### Notifications (Future)
+- [ ] Email warnings when approaching limits (80% / 95%)
+- [ ] Email on disable due to quota (optional)
 
 ### Usage Statistics
 - [ ] Current session duration

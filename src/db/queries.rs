@@ -14,12 +14,13 @@ fn row_to_user(row: &Row) -> rusqlite::Result<User> {
     Ok(User {
         id: row.get(0)?,
         username: row.get(1)?,
-        public_key: row.get(2)?,
-        private_key_encrypted: row.get(3)?,
-        key_type: row.get(4)?,
-        is_active: row.get::<_, i64>(5)? != 0,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        email: row.get(2)?,
+        public_key: row.get(3)?,
+        private_key_encrypted: row.get(4)?,
+        key_type: row.get(5)?,
+        is_active: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
@@ -108,13 +109,15 @@ impl Database {
     pub fn create_user(
         &self,
         username: &str,
+        email: Option<&str>,
         public_key: &str,
         private_key_encrypted: &str,
         key_type: &str,
     ) -> Result<i64> {
         self.conn().execute(
-            "INSERT INTO users (username, public_key, private_key_encrypted, key_type) VALUES (?, ?, ?, ?)",
-            params![username, public_key, private_key_encrypted, key_type],
+            "INSERT INTO users (username, email, public_key, private_key_encrypted, key_type)
+             VALUES (?, ?, ?, ?, ?)",
+            params![username, email, public_key, private_key_encrypted, key_type],
         )?;
         Ok(self.conn().last_insert_rowid())
     }
@@ -123,19 +126,20 @@ impl Database {
     pub fn create_user_encrypted(
         &self,
         username: &str,
+        email: Option<&str>,
         public_key: &str,
         private_key: &str,
         key_type: &str,
         password: &str,
     ) -> Result<i64> {
         let encrypted = encrypt(private_key, password)?;
-        self.create_user(username, public_key, &encrypted, key_type)
+        self.create_user(username, email, public_key, &encrypted, key_type)
     }
 
     #[allow(dead_code)]
     pub fn get_user(&self, id: i64) -> Result<Option<User>> {
         let mut stmt = self.conn().prepare(
-            "SELECT id, username, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
+            "SELECT id, username, email, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
              FROM users WHERE id = ?"
         )?;
         let result = stmt.query_row(params![id], row_to_user).optional()?;
@@ -145,7 +149,7 @@ impl Database {
     #[allow(dead_code)]
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
         let mut stmt = self.conn().prepare(
-            "SELECT id, username, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
+            "SELECT id, username, email, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
              FROM users WHERE username = ?"
         )?;
         let result = stmt.query_row(params![username], row_to_user).optional()?;
@@ -154,7 +158,7 @@ impl Database {
 
     pub fn list_users(&self) -> Result<Vec<User>> {
         let mut stmt = self.conn().prepare(
-            "SELECT id, username, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
+            "SELECT id, username, email, public_key, private_key_encrypted, key_type, is_active, created_at, updated_at
              FROM users ORDER BY created_at DESC"
         )?;
         let users = stmt
@@ -175,6 +179,15 @@ impl Database {
         let rows = self.conn().execute(
             "UPDATE users SET is_active = NOT is_active, updated_at = datetime('now') WHERE id = ?",
             params![id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn set_user_active(&self, id: i64, is_active: bool) -> Result<bool> {
+        let value = if is_active { 1 } else { 0 };
+        let rows = self.conn().execute(
+            "UPDATE users SET is_active = ?, updated_at = datetime('now') WHERE id = ?",
+            params![value, id],
         )?;
         Ok(rows > 0)
     }
@@ -449,8 +462,14 @@ mod tests {
 
     fn create_user(db: &Database) -> i64 {
         let encrypted = encrypt("private_key", "password").expect("encrypt");
-        db.create_user("user1", "ssh-ed25519 AAAA", &encrypted, "ed25519")
-            .expect("create user")
+        db.create_user(
+            "user1",
+            Some("user1@example.com"),
+            "ssh-ed25519 AAAA",
+            &encrypted,
+            "ed25519",
+        )
+        .expect("create user")
     }
 
     #[test]

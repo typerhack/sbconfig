@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub id: i64,
     pub username: String,
+    pub email: Option<String>,
     pub public_key: String,
     pub private_key_encrypted: String,
     pub key_type: String,

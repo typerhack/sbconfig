@@ -85,6 +85,7 @@ Stores SSH proxy users and their keys.
 CREATE TABLE users (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     username        TEXT UNIQUE NOT NULL,
+    email           TEXT UNIQUE,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     key_type        TEXT DEFAULT 'ed25519' CHECK (key_type IN ('ed25519', 'rsa')),
     public_key      TEXT NOT NULL,
@@ -95,6 +96,7 @@ CREATE TABLE users (
 
 -- Indexes
 CREATE INDEX idx_users_username ON users(username);
+CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_is_active ON users(is_active);
 ```
 
@@ -102,6 +104,7 @@ CREATE INDEX idx_users_is_active ON users(is_active);
 |--------|------|-------------|
 | `id` | INTEGER | Auto-increment primary key |
 | `username` | TEXT | Unique system username |
+| `email` | TEXT | Optional email address (unique when present) |
 | `created_at` | DATETIME | User creation timestamp |
 | `key_type` | TEXT | Key algorithm: `ed25519` or `rsa` |
 | `public_key` | TEXT | SSH public key (OpenSSH format) |
@@ -110,6 +113,7 @@ CREATE INDEX idx_users_is_active ON users(is_active);
 | `notes` | TEXT | Optional user notes |
 
 > **Note:** `ssh_port` is removed from users table - all users share the same custom SSH port configured in settings.
+> **Note:** `public_id` is reserved for future external integrations (bot/self-service) and is not stored yet.
 
 ### settings
 

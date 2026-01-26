@@ -2,6 +2,8 @@
 
 > TUI screen mockups and navigation flow for sbconfig.
 
+> **Global:** Every screen footer includes `[q] Quit`.
+
 ## Navigation Flow
 
 ```
@@ -302,12 +304,12 @@ Layout notes:
 │                                                                          │
 │   ┌─ Users ────────────────────────────────────────────────────────────┐ │
 │   │                                                                     │ │
-│   │   #   Username        Created       Port   Status    Configs       │ │
+│   │   #   Username        Created       Status    Configs              │ │
 │   │   ─────────────────────────────────────────────────────────────    │ │
-│   │   1   user_alpha      2024-01-15    7344   Active    3             │ │
-│   │ > 2   user_beta       2024-01-18    7344   Active    5             │ │
-│   │   3   user_gamma      2024-01-20    7344   Disabled  1             │ │
-│   │   4   user_delta      2024-01-22    7344   Active    0             │ │
+│   │   1   user_alpha      2024-01-15    Active    3                    │ │
+│   │ > 2   user_beta       2024-01-18    Active    5                    │ │
+│   │   3   user_gamma      2024-01-20    Disabled  1                    │ │
+│   │   4   user_delta      2024-01-22    Active    0                    │ │
 │   │                                                                     │ │
 │   │                                                       Total: 4     │ │
 │   └─────────────────────────────────────────────────────────────────────┘ │
@@ -315,8 +317,8 @@ Layout notes:
 │   ┌─ User Details: user_beta ──────────────────────────────────────────┐ │
 │   │                                                                     │ │
 │   │   Username:    user_beta                                           │ │
+│   │   Email:       user_beta@example.com                               │ │
 │   │   Created:     2024-01-18 14:32:00 UTC                             │ │
-│   │   SSH Port:    7344                                                │ │
 │   │   Key Type:    ED25519                                             │ │
 │   │   Status:      ● Active                                            │ │
 │   │   Configs:     5 generated                                         │ │
@@ -344,7 +346,7 @@ Layout notes:
 │   │                                                                     │ │
 │   │   Username:    [user_echo____________]   (auto-generated)          │ │
 │   │                                                                     │ │
-│   │   SSH Port:    [7344_]                   (default: 7344)           │ │
+│   │   Email:       [user@example.com____________________] (optional)  │ │
 │   │                                                                     │ │
 │   │   Key Type:    (●) ED25519  ( ) RSA                                │ │
 │   │                                                                     │ │
@@ -356,7 +358,7 @@ Layout notes:
 │   │                                                                     │ │
 │   │   System user 'user_echo' will be created                          │ │
 │   │   ED25519 SSH key pair will be generated                           │ │
-│   │   User will be able to connect via SSH on port 7344                │ │
+│   │   User will be able to connect via the configured SSH port         │ │
 │   │                                                                     │ │
 │   └─────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │

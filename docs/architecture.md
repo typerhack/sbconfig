@@ -245,7 +245,7 @@ impl Database {
 
 ### 4. SSH Module (`src/ssh/`)
 
-Handles SSH key generation, system user management, and SSH port configuration.
+Handles SSH key generation, system user management, and SSH port configuration. User identity includes a username and an optional email for search/notification workflows.
 
 ```rust
 // Key generation
@@ -311,6 +311,10 @@ pub fn add_ssh_port(port: u16) -> Result<()> {
 }
 ```
 
+#### Connection and Traffic Limits
+
+Per-user limits are stored in `user_limits` (max concurrent connections and traffic quota). Usage is tracked in `user_connections` and `traffic_usage`.
+
 ### 5. sing-box Module (`src/singbox/`)
 
 Handles sing-box detection and status checking (NOT installation).
@@ -344,7 +348,7 @@ pub fn generate_uri(config: &ClientConfig) -> String;
 │  Input   │    │  Logic   │    │  Module  │    │  Users   │    │  Store   │
 └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
      │                │                │                │              │
-     │  username      │  validate      │  gen keys      │  useradd     │  INSERT
+     │  username/email│  validate      │  gen keys      │  useradd     │  INSERT
      │  ──────────▶   │  ──────────▶   │  ──────────▶   │  ──────────▶ │  ──────▶
      │                │                │  setup ssh     │              │
      │                │                │  ──────────▶   │              │

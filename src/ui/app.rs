@@ -1,7 +1,7 @@
 // src/ui/app.rs
 // Main application state and event loop
 
-use crate::db::{decrypt, Database};
+use crate::db::{decrypt, Database, User};
 use crate::error::Result;
 use crate::singbox;
 use crate::singbox::{generate_config_json, RoutingPreset, ServiceStatus};
@@ -14,7 +14,7 @@ use ratatui::widgets::*;
 use std::fs;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SetupStep {
@@ -52,14 +52,36 @@ struct SetupState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UserCreateFocus {
     Username,
+    Email,
+    MaxDevices,
+    TrafficLimit,
     KeyType,
 }
 
 #[derive(Debug, Clone)]
 struct UserCreateState {
     username_input: InputField,
+    email_input: InputField,
+    max_devices_input: InputField,
+    traffic_limit_input: InputField,
     key_type: KeyType,
     focus: UserCreateFocus,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserManageFocus {
+    Status,
+    MaxDevices,
+    TrafficLimit,
+}
+
+#[derive(Debug, Clone)]
+struct UserManageState {
+    focus: UserManageFocus,
+    is_active: bool,
+    max_devices_input: InputField,
+    traffic_limit_input: InputField,
     error: Option<String>,
 }
 
@@ -243,13 +265,20 @@ impl InputField {
     }
 }
 
-fn render_input_spans(field: &InputField, width: usize) -> Vec<Span<'static>> {
-    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+fn render_input_spans(field: &InputField, width: usize, show_cursor: bool) -> Vec<Span<'static>> {
+    let cursor_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::White)
+        .add_modifier(Modifier::BOLD);
     let target_width = width.max(1);
     let mut display = field.value.clone();
     if display.len() < target_width {
         display.push_str(&"_".repeat(target_width - display.len()));
     }
+    if !show_cursor {
+        return vec![Span::raw(display)];
+    }
+
     let cursor = field.cursor.min(display.len().saturating_sub(1));
     let before = &display[..cursor];
     let after = &display[cursor..];
@@ -349,7 +378,7 @@ impl MenuItem {
     fn screen(self) -> Option<Screen> {
         match self {
             MenuItem::Singbox => Some(Screen::SingboxStatus),
-            MenuItem::Users => Some(Screen::Users),
+            MenuItem::Users => Some(Screen::UsersMenu),
             MenuItem::Configs => Some(Screen::Configs),
             MenuItem::Settings => Some(Screen::Settings),
             MenuItem::Logs => Some(Screen::Logs),
@@ -363,9 +392,11 @@ pub enum Screen {
     Setup,
     Dashboard,
     SingboxStatus,
+    UsersMenu,
     Users,
     UserCreate,
     UserDelete,
+    UserManage,
     Configs,
     ConfigPlatform,
     ConfigOutput,
@@ -380,16 +411,20 @@ pub struct App {
     screen_stack: Vec<Screen>,
     // Dashboard state
     menu_index: usize,
+    users_menu_index: usize,
     // Users screen state
     user_list_index: usize,
     setup_state: SetupState,
     user_create_state: UserCreateState,
     user_delete_state: UserDeleteState,
+    user_manage_state: UserManageState,
     config_state: ConfigState,
     settings_edit_state: SettingsEditState,
     settings_modal: SettingsModal,
     settings_modal_error: Option<String>,
     settings_modal_scroll: u16,
+    cursor_visible: bool,
+    last_cursor_toggle: Instant,
     logs_state: LogsState,
     status_message: Option<String>,
     singbox_action_index: usize,
@@ -450,15 +485,26 @@ impl App {
             screen: initial_screen,
             screen_stack: Vec::new(),
             menu_index: 0,
+            users_menu_index: 0,
             user_list_index: 0,
             setup_state,
             user_create_state: UserCreateState {
                 username_input: InputField::new(""),
+                email_input: InputField::new(""),
+                max_devices_input: InputField::new("0"),
+                traffic_limit_input: InputField::new("0"),
                 key_type: KeyType::Ed25519,
                 focus: UserCreateFocus::Username,
                 error: None,
             },
             user_delete_state: UserDeleteState { error: None },
+            user_manage_state: UserManageState {
+                focus: UserManageFocus::Status,
+                is_active: true,
+                max_devices_input: InputField::new("0"),
+                traffic_limit_input: InputField::new("0"),
+                error: None,
+            },
             config_state: ConfigState {
                 platform_index: 0,
                 user_id: None,
@@ -476,6 +522,8 @@ impl App {
             settings_modal: SettingsModal::None,
             settings_modal_error: None,
             settings_modal_scroll: 0,
+            cursor_visible: true,
+            last_cursor_toggle: Instant::now(),
             logs_state: LogsState {
                 session_index: 0,
                 scroll: 0,
@@ -519,9 +567,11 @@ impl App {
             Screen::SingboxStatus => {
                 format!(" sbconfig v{} > sing-box Status ", Self::app_version())
             }
-            Screen::Users => format!(" sbconfig v{} > User Management ", Self::app_version()),
+            Screen::UsersMenu => format!(" sbconfig v{} > User Management ", Self::app_version()),
+            Screen::Users => format!(" sbconfig v{} > Users ", Self::app_version()),
             Screen::UserCreate => format!(" sbconfig v{} > Create User ", Self::app_version()),
             Screen::UserDelete => format!(" sbconfig v{} > Delete User ", Self::app_version()),
+            Screen::UserManage => format!(" sbconfig v{} > Manage User ", Self::app_version()),
             Screen::Configs => format!(" sbconfig v{} > Config Generation ", Self::app_version()),
             Screen::ConfigPlatform => {
                 format!(" sbconfig v{} > Select Platform ", Self::app_version())
@@ -541,9 +591,20 @@ impl App {
             Screen::Setup => self.draw_setup(frame, chunks[1]),
             Screen::Dashboard => self.draw_dashboard(frame, chunks[1]),
             Screen::SingboxStatus => self.draw_singbox_status(frame, chunks[1]),
+            Screen::UsersMenu => self.draw_users_menu(frame, chunks[1]),
             Screen::Users => self.draw_users(frame, chunks[1]),
-            Screen::UserCreate => self.draw_user_create(frame, chunks[1]),
-            Screen::UserDelete => self.draw_user_delete(frame, chunks[1]),
+            Screen::UserCreate => {
+                self.draw_users(frame, chunks[1]);
+                self.draw_user_create(frame, chunks[1]);
+            }
+            Screen::UserDelete => {
+                self.draw_users(frame, chunks[1]);
+                self.draw_user_delete(frame, chunks[1]);
+            }
+            Screen::UserManage => {
+                self.draw_users(frame, chunks[1]);
+                self.draw_user_manage(frame, chunks[1]);
+            }
             Screen::Configs => self.draw_configs(frame, chunks[1]),
             Screen::ConfigPlatform => self.draw_config_platform(frame, chunks[1]),
             Screen::ConfigOutput => self.draw_config_output(frame, chunks[1]),
@@ -560,15 +621,19 @@ impl App {
             Screen::SingboxStatus => {
                 " [Up/Down] Navigate  [Enter] Run  [1-9] Quick  [Esc] Back  [q] Quit "
             }
+            Screen::UsersMenu => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
             Screen::Users => {
-                " [Up/Down] Navigate  [a] Add  [d] Delete  [Enter] Toggle  [Esc] Back "
+                " [Up/Down] Navigate  [Enter] Manage  [a] Add  [d] Delete  [t] Toggle  [g] Generate  [Esc] Back  [q] Quit "
             }
             Screen::UserCreate => {
-                " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Create  [Esc] Cancel "
+                " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Create  [Esc] Cancel  [q] Quit "
             }
-            Screen::UserDelete => " [y] Confirm  [n] Cancel  [Esc] Back ",
-            Screen::ConfigPlatform => " [Up/Down] Navigate  [Enter] Select  [Esc] Back ",
-            Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back ",
+            Screen::UserDelete => " [y] Confirm  [n] Cancel  [Esc] Back  [q] Quit ",
+            Screen::UserManage => {
+                " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Save  [Esc] Close  [q] Quit "
+            }
+            Screen::ConfigPlatform => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
+            Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back  [q] Quit ",
             Screen::Settings => " [Up/Down] Navigate  [Enter] Edit  [Esc] Back  [q] Quit ",
             _ => " [Esc] Back  [b] Back  [q] Quit ",
         };
@@ -1083,7 +1148,17 @@ impl App {
             .flatten()
             .unwrap_or_else(|| "7344".to_string());
 
+        let username_active = self.user_create_state.focus == UserCreateFocus::Username;
+        let email_active = self.user_create_state.focus == UserCreateFocus::Email;
+        let max_devices_active = self.user_create_state.focus == UserCreateFocus::MaxDevices;
+        let traffic_active = self.user_create_state.focus == UserCreateFocus::TrafficLimit;
+
         let username_style = if self.user_create_state.focus == UserCreateFocus::Username {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        let email_style = if self.user_create_state.focus == UserCreateFocus::Email {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default()
@@ -1099,18 +1174,74 @@ impl App {
             KeyType::Rsa => "( ) ED25519  (●) RSA",
         };
 
+        let username_spans = render_input_spans(
+            &self.user_create_state.username_input,
+            16,
+            username_active && self.cursor_visible,
+        );
+        let email_spans = render_input_spans(
+            &self.user_create_state.email_input,
+            24,
+            email_active && self.cursor_visible,
+        );
+        let max_devices_spans = render_input_spans(
+            &self.user_create_state.max_devices_input,
+            4,
+            max_devices_active && self.cursor_visible,
+        );
+        let traffic_spans = render_input_spans(
+            &self.user_create_state.traffic_limit_input,
+            6,
+            traffic_active && self.cursor_visible,
+        );
+        let mut username_line = vec![Span::styled(" Username*: ", username_style), Span::raw("[")];
+        username_line.extend(username_spans);
+        username_line.push(Span::raw("]"));
+        let mut email_line = vec![
+            Span::styled(" Email (optional): ", email_style),
+            Span::raw("["),
+        ];
+        email_line.extend(email_spans);
+        email_line.push(Span::raw("]"));
+        let mut devices_line = vec![
+            Span::styled(
+                " Max Devices: ",
+                if max_devices_active {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::raw("["),
+        ];
+        devices_line.extend(max_devices_spans);
+        devices_line.push(Span::raw("]  (0 = unlimited)"));
+        let mut traffic_line = vec![
+            Span::styled(
+                " Traffic (GB): ",
+                if traffic_active {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            ),
+            Span::raw("["),
+        ];
+        traffic_line.extend(traffic_spans);
+        traffic_line.push(Span::raw("]  (0 = unlimited)"));
         let mut lines = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled(" Username: ", username_style),
-                Span::raw(format!("[{}]", self.user_create_state.username_input.value)),
-            ]),
+            Line::from(username_line),
+            Line::from(email_line),
+            Line::from(devices_line),
+            Line::from(traffic_line),
             Line::from(format!(" SSH Port: [{}]", ssh_port)),
             Line::from(vec![
                 Span::styled(" Key Type: ", key_style),
                 Span::raw(key_choice),
             ]),
             Line::from(""),
+            Line::from(" [Enter] Create  [Esc] Cancel"),
         ];
 
         if let Some(error) = &self.user_create_state.error {
@@ -1120,11 +1251,15 @@ impl App {
             )));
         }
 
+        let popup_area = centered_rect(70, 40, area);
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Create User ");
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
+        frame.render_widget(Clear, popup_area);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+        let paragraph = Paragraph::new(lines).block(Block::default());
+        frame.render_widget(paragraph, inner);
     }
 
     fn draw_user_delete(&self, frame: &mut Frame, area: Rect) {
@@ -1143,11 +1278,112 @@ impl App {
                 Style::default().fg(Color::Red),
             )));
         }
+        let popup_area = centered_rect(60, 30, area);
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Delete User ");
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
+        frame.render_widget(Clear, popup_area);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+        let paragraph = Paragraph::new(lines).block(Block::default());
+        frame.render_widget(paragraph, inner);
+    }
+
+    fn draw_user_manage(&self, frame: &mut Frame, area: Rect) {
+        let users = self.db.list_users().unwrap_or_default();
+        let user = users.get(self.user_list_index);
+        let mut lines = vec![Line::from("")];
+
+        if let Some(user) = user {
+            let status_line = if self.user_manage_state.is_active {
+                " Status: (●) Active  ( ) Disabled"
+            } else {
+                " Status: ( ) Active  (●) Disabled"
+            };
+            let status_style = if self.user_manage_state.focus == UserManageFocus::Status {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            let max_devices_spans = render_input_spans(
+                &self.user_manage_state.max_devices_input,
+                4,
+                self.user_manage_state.focus == UserManageFocus::MaxDevices && self.cursor_visible,
+            );
+            let traffic_spans = render_input_spans(
+                &self.user_manage_state.traffic_limit_input,
+                6,
+                self.user_manage_state.focus == UserManageFocus::TrafficLimit
+                    && self.cursor_visible,
+            );
+
+            let mut devices_line = vec![Span::styled(
+                " Max Devices: ",
+                if self.user_manage_state.focus == UserManageFocus::MaxDevices {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            )];
+            devices_line.push(Span::raw("["));
+            devices_line.extend(max_devices_spans);
+            devices_line.push(Span::raw("]  (0 = unlimited)"));
+
+            let mut traffic_line = vec![Span::styled(
+                " Traffic (GB): ",
+                if self.user_manage_state.focus == UserManageFocus::TrafficLimit {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                },
+            )];
+            traffic_line.push(Span::raw("["));
+            traffic_line.extend(traffic_spans);
+            traffic_line.push(Span::raw("]  (0 = unlimited)"));
+
+            let (bytes_up, bytes_down) = self.db.traffic_usage_totals(user.id).unwrap_or((0, 0));
+            let total_used = bytes_up.saturating_add(bytes_down);
+            let used_label = format!("{:.2} GB", total_used as f64 / 1024f64.powi(3));
+            let active_connections = self.db.count_active_connections(user.id).unwrap_or(0);
+
+            lines.push(Line::from(format!(" User: {}", user.username)));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(status_line, status_style)));
+            lines.push(Line::from(devices_line));
+            lines.push(Line::from(traffic_line));
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!(
+                " Online: {}",
+                if active_connections > 0 { "Yes" } else { "No" }
+            )));
+            lines.push(Line::from(format!(
+                " Active connections: {}",
+                active_connections
+            )));
+            lines.push(Line::from(format!(" Traffic used: {}", used_label)));
+            lines.push(Line::from(""));
+            lines.push(Line::from(" [Enter] Save  [Esc] Cancel"));
+        } else {
+            lines.push(Line::from(" No user selected."));
+        }
+
+        if let Some(error) = &self.user_manage_state.error {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                error,
+                Style::default().fg(Color::Red),
+            )));
+        }
+
+        let popup_area = centered_rect(70, 40, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Manage User ");
+        frame.render_widget(Clear, popup_area);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+        let paragraph = Paragraph::new(lines).block(Block::default());
+        frame.render_widget(paragraph, inner);
     }
 
     fn draw_config_platform(&self, frame: &mut Frame, area: Rect) {
@@ -1192,36 +1428,34 @@ impl App {
     }
 
     fn draw_users(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(area);
-
         let body_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(chunks[0]);
+            .split(area);
 
         let users = self.db.list_users().unwrap_or_default();
 
         if users.is_empty() {
-            let empty_text = vec![
-                Line::from(""),
-                Line::from("  No users configured yet."),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Press [a] to add a new user",
-                    Style::default().fg(Color::Cyan),
-                )),
+            let items = vec![
+                ListItem::new(Line::from(" No users configured yet.")),
+                ListItem::new(Line::from(" Add a new user")),
             ];
-            let empty = Paragraph::new(empty_text)
-                .block(Block::default().borders(Borders::ALL).title(" Users "));
-            frame.render_widget(empty, body_chunks[0]);
+            let list = List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(" Users "))
+                .highlight_symbol(" > ")
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
+            let mut list_state = ListState::default();
+            list_state.select(Some(1));
+            frame.render_stateful_widget(list, body_chunks[0], &mut list_state);
         } else {
             let items: Vec<ListItem> = users
                 .iter()
-                .enumerate()
-                .map(|(i, u)| {
+                .map(|u| {
                     let status_style = if u.is_active {
                         Style::default().fg(Color::Green)
                     } else {
@@ -1229,11 +1463,8 @@ impl App {
                     };
                     let status_text = if u.is_active { "Active" } else { "Disabled" };
 
-                    let is_selected = i == self.user_list_index;
-                    let prefix = if is_selected { " > " } else { "   " };
-
                     let line = Line::from(vec![
-                        Span::raw(prefix),
+                        Span::raw(" "),
                         Span::styled(format!("[{}]", status_text), status_style),
                         Span::raw(format!(" {} ", u.username)),
                         Span::styled(
@@ -1241,27 +1472,26 @@ impl App {
                             Style::default().fg(Color::DarkGray),
                         ),
                     ]);
-
-                    let style = if is_selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-
-                    ListItem::new(line).style(style)
+                    ListItem::new(line)
                 })
                 .collect();
 
-            let list = List::new(items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Users ({}) ", users.len())),
-            );
-
-            frame.render_widget(list, body_chunks[0]);
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" Users ({}) ", users.len())),
+                )
+                .highlight_symbol(" > ")
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
+            let mut list_state = ListState::default();
+            list_state.select(Some(self.user_list_index));
+            frame.render_stateful_widget(list, body_chunks[0], &mut list_state);
         }
 
         let detail_block = Block::default()
@@ -1271,25 +1501,72 @@ impl App {
         frame.render_widget(detail_block, body_chunks[1]);
 
         if let Some(user) = users.get(self.user_list_index) {
+            let limits = self.db.get_user_limits(user.id).ok().flatten();
+            let max_devices = limits.as_ref().and_then(|l| l.max_connections).unwrap_or(0);
+            let traffic_limit_bytes = limits
+                .as_ref()
+                .and_then(|l| l.traffic_quota_bytes)
+                .unwrap_or(0);
+            let (bytes_up, bytes_down) = self.db.traffic_usage_totals(user.id).unwrap_or((0, 0));
+            let total_used = bytes_up.saturating_add(bytes_down);
+            let active_connections = self.db.count_active_connections(user.id).unwrap_or(0);
+            let online_state = if active_connections > 0 {
+                "Online"
+            } else {
+                "Offline"
+            };
+            let max_devices_label = if max_devices <= 0 {
+                "Unlimited".to_string()
+            } else {
+                max_devices.to_string()
+            };
+            let traffic_limit_label = if traffic_limit_bytes <= 0 {
+                "Unlimited".to_string()
+            } else {
+                format!("{:.2} GB", traffic_limit_bytes as f64 / 1024f64.powi(3))
+            };
+            let used_label = format!("{:.2} GB", total_used as f64 / 1024f64.powi(3));
             let detail_lines = vec![
                 Line::from(format!(" Username: {}", user.username)),
+                Line::from(format!(
+                    " Email:    {}",
+                    user.email.as_deref().unwrap_or("Not set")
+                )),
                 Line::from(format!(" Key Type: {}", user.key_type)),
                 Line::from(format!(
                     " Active:   {}",
                     if user.is_active { "Yes" } else { "No" }
+                )),
+                Line::from(format!(" Status:   {}", online_state)),
+                Line::from(format!(
+                    " Devices:  {}/{}",
+                    active_connections, max_devices_label
+                )),
+                Line::from(format!(
+                    " Traffic:  {} used / {}",
+                    used_label, traffic_limit_label
                 )),
                 Line::from(format!(" Created:  {}", user.created_at)),
             ];
             let paragraph = Paragraph::new(detail_lines);
             frame.render_widget(paragraph, detail_inner);
         }
+    }
 
-        let hints = Paragraph::new(
-            " [a] Add User  [d] Delete  [Enter] Toggle Active  [g] Generate Config ",
-        )
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(hints, chunks[1]);
+    fn draw_users_menu(&self, frame: &mut Frame, area: Rect) {
+        let items = vec![ListItem::new(" Add New User"), ListItem::new(" List Users")];
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(" Actions "))
+            .highlight_symbol(" > ")
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let mut state = ListState::default();
+        state.select(Some(self.users_menu_index.min(1)));
+        frame.render_stateful_widget(list, area, &mut state);
     }
 
     fn draw_configs(&self, frame: &mut Frame, area: Rect) {
@@ -1433,6 +1710,7 @@ impl App {
                 spans.extend(render_input_spans(
                     &self.settings_edit_state.server_input,
                     32,
+                    self.cursor_visible,
                 ));
                 let lines = vec![
                     Line::from(" Enter server address (domain or IP)."),
@@ -1448,6 +1726,7 @@ impl App {
                 spans.extend(render_input_spans(
                     &self.settings_edit_state.ssh_port_input,
                     6,
+                    self.cursor_visible,
                 ));
                 let lines = vec![
                     Line::from(" Enter custom SSH port for proxy users."),
@@ -1593,6 +1872,10 @@ impl App {
     }
 
     fn handle_events(&mut self) -> Result<()> {
+        if self.last_cursor_toggle.elapsed() >= Duration::from_millis(500) {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_cursor_toggle = Instant::now();
+        }
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
@@ -1604,9 +1887,11 @@ impl App {
                         Screen::Setup => self.handle_setup_input(key.code),
                         Screen::Dashboard => self.handle_dashboard_input(key.code),
                         Screen::SingboxStatus => self.handle_singbox_status_input(key.code),
+                        Screen::UsersMenu => self.handle_users_menu_input(key.code),
                         Screen::Users => self.handle_users_input(key.code),
                         Screen::UserCreate => self.handle_user_create_input(key.code),
                         Screen::UserDelete => self.handle_user_delete_input(key.code),
+                        Screen::UserManage => self.handle_user_manage_input(key.code),
                         Screen::Configs => self.handle_generic_input(key.code),
                         Screen::ConfigPlatform => self.handle_config_platform_input(key.code),
                         Screen::ConfigOutput => self.handle_config_output_input(key.code),
@@ -1876,16 +2161,30 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // Toggle active status
                 if let Ok(users) = self.db.list_users() {
-                    if let Some(user) = users.get(self.user_list_index) {
-                        let _ = self.db.toggle_user_active(user.id);
+                    if users.is_empty() {
+                        self.user_create_state = UserCreateState {
+                            username_input: InputField::new(""),
+                            email_input: InputField::new(""),
+                            max_devices_input: InputField::new("0"),
+                            traffic_limit_input: InputField::new("0"),
+                            key_type: KeyType::Ed25519,
+                            focus: UserCreateFocus::Username,
+                            error: None,
+                        };
+                        self.push_screen(Screen::UserCreate);
+                    } else if let Some(user) = users.get(self.user_list_index) {
+                        self.load_user_manage_state(user);
+                        self.push_screen(Screen::UserManage);
                     }
                 }
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.user_create_state = UserCreateState {
-                    username_input: InputField::new("user_"),
+                    username_input: InputField::new(""),
+                    email_input: InputField::new(""),
+                    max_devices_input: InputField::new("0"),
+                    traffic_limit_input: InputField::new("0"),
                     key_type: KeyType::Ed25519,
                     focus: UserCreateFocus::Username,
                     error: None,
@@ -1907,6 +2206,52 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                if let Ok(users) = self.db.list_users() {
+                    if let Some(user) = users.get(self.user_list_index) {
+                        let _ = self.db.toggle_user_active(user.id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_users_menu_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Up => {
+                if self.users_menu_index == 0 {
+                    self.users_menu_index = 1;
+                } else {
+                    self.users_menu_index = 0;
+                }
+            }
+            KeyCode::Down => {
+                if self.users_menu_index == 0 {
+                    self.users_menu_index = 1;
+                } else {
+                    self.users_menu_index = 0;
+                }
+            }
+            KeyCode::Enter => match self.users_menu_index {
+                0 => {
+                    self.push_screen(Screen::Users);
+                    self.user_create_state = UserCreateState {
+                        username_input: InputField::new(""),
+                        email_input: InputField::new(""),
+                        max_devices_input: InputField::new("0"),
+                        traffic_limit_input: InputField::new("0"),
+                        key_type: KeyType::Ed25519,
+                        focus: UserCreateFocus::Username,
+                        error: None,
+                    };
+                    self.push_screen(Screen::UserCreate);
+                }
+                _ => {
+                    self.push_screen(Screen::Users);
+                }
+            },
             _ => {}
         }
     }
@@ -1916,9 +2261,21 @@ impl App {
             KeyCode::Esc => {
                 self.pop_screen();
             }
-            KeyCode::Up | KeyCode::Down => {
+            KeyCode::Up => {
                 self.user_create_state.focus = match self.user_create_state.focus {
                     UserCreateFocus::Username => UserCreateFocus::KeyType,
+                    UserCreateFocus::Email => UserCreateFocus::Username,
+                    UserCreateFocus::MaxDevices => UserCreateFocus::Email,
+                    UserCreateFocus::TrafficLimit => UserCreateFocus::MaxDevices,
+                    UserCreateFocus::KeyType => UserCreateFocus::TrafficLimit,
+                };
+            }
+            KeyCode::Down => {
+                self.user_create_state.focus = match self.user_create_state.focus {
+                    UserCreateFocus::Username => UserCreateFocus::Email,
+                    UserCreateFocus::Email => UserCreateFocus::MaxDevices,
+                    UserCreateFocus::MaxDevices => UserCreateFocus::TrafficLimit,
+                    UserCreateFocus::TrafficLimit => UserCreateFocus::KeyType,
                     UserCreateFocus::KeyType => UserCreateFocus::Username,
                 };
             }
@@ -1930,18 +2287,44 @@ impl App {
                     };
                 }
             }
-            KeyCode::Char(ch) => {
-                if self.user_create_state.focus == UserCreateFocus::Username
-                    && (ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
-                {
-                    self.user_create_state.username_input.insert_char(ch);
+            KeyCode::Char(ch) => match self.user_create_state.focus {
+                UserCreateFocus::Username => {
+                    if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' {
+                        self.user_create_state.username_input.insert_char(ch);
+                    }
                 }
-            }
-            KeyCode::Backspace => {
-                if self.user_create_state.focus == UserCreateFocus::Username {
+                UserCreateFocus::Email => {
+                    if ch.is_ascii_graphic() && ch != ' ' {
+                        self.user_create_state.email_input.insert_char(ch);
+                    }
+                }
+                UserCreateFocus::MaxDevices => {
+                    if ch.is_ascii_digit() {
+                        self.user_create_state.max_devices_input.insert_char(ch);
+                    }
+                }
+                UserCreateFocus::TrafficLimit => {
+                    if ch.is_ascii_digit() {
+                        self.user_create_state.traffic_limit_input.insert_char(ch);
+                    }
+                }
+                UserCreateFocus::KeyType => {}
+            },
+            KeyCode::Backspace => match self.user_create_state.focus {
+                UserCreateFocus::Username => {
                     self.user_create_state.username_input.backspace();
                 }
-            }
+                UserCreateFocus::Email => {
+                    self.user_create_state.email_input.backspace();
+                }
+                UserCreateFocus::MaxDevices => {
+                    self.user_create_state.max_devices_input.backspace();
+                }
+                UserCreateFocus::TrafficLimit => {
+                    self.user_create_state.traffic_limit_input.backspace();
+                }
+                UserCreateFocus::KeyType => {}
+            },
             KeyCode::Enter => {
                 if let Err(err) = self.create_user_from_form() {
                     self.user_create_state.error = Some(err.to_string());
@@ -1962,6 +2345,113 @@ impl App {
                 if let Err(err) = self.delete_selected_user() {
                     self.user_delete_state.error = Some(err.to_string());
                 } else {
+                    self.pop_screen();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_user_manage_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc => self.pop_screen(),
+            KeyCode::Up => {
+                self.user_manage_state.focus = match self.user_manage_state.focus {
+                    UserManageFocus::Status => UserManageFocus::TrafficLimit,
+                    UserManageFocus::MaxDevices => UserManageFocus::Status,
+                    UserManageFocus::TrafficLimit => UserManageFocus::MaxDevices,
+                };
+            }
+            KeyCode::Down => {
+                self.user_manage_state.focus = match self.user_manage_state.focus {
+                    UserManageFocus::Status => UserManageFocus::MaxDevices,
+                    UserManageFocus::MaxDevices => UserManageFocus::TrafficLimit,
+                    UserManageFocus::TrafficLimit => UserManageFocus::Status,
+                };
+            }
+            KeyCode::Left | KeyCode::Right => {
+                if self.user_manage_state.focus == UserManageFocus::Status {
+                    self.user_manage_state.is_active = !self.user_manage_state.is_active;
+                }
+            }
+            KeyCode::Char(ch) => match self.user_manage_state.focus {
+                UserManageFocus::MaxDevices => {
+                    if ch.is_ascii_digit() {
+                        self.user_manage_state.max_devices_input.insert_char(ch);
+                    }
+                }
+                UserManageFocus::TrafficLimit => {
+                    if ch.is_ascii_digit() {
+                        self.user_manage_state.traffic_limit_input.insert_char(ch);
+                    }
+                }
+                UserManageFocus::Status => {}
+            },
+            KeyCode::Backspace => match self.user_manage_state.focus {
+                UserManageFocus::MaxDevices => {
+                    self.user_manage_state.max_devices_input.backspace();
+                }
+                UserManageFocus::TrafficLimit => {
+                    self.user_manage_state.traffic_limit_input.backspace();
+                }
+                UserManageFocus::Status => {}
+            },
+            KeyCode::Enter => {
+                let users = self.db.list_users().unwrap_or_default();
+                if let Some(user) = users.get(self.user_list_index) {
+                    let max_devices = match Self::parse_non_negative(
+                        &self.user_manage_state.max_devices_input.value,
+                        "Max devices",
+                    ) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            self.user_manage_state.error = Some(err.to_string());
+                            return;
+                        }
+                    };
+                    let traffic_gb = match Self::parse_non_negative(
+                        &self.user_manage_state.traffic_limit_input.value,
+                        "Traffic limit (GB)",
+                    ) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            self.user_manage_state.error = Some(err.to_string());
+                            return;
+                        }
+                    };
+
+                    let max_connections = if max_devices == 0 {
+                        None
+                    } else {
+                        Some(max_devices)
+                    };
+                    let traffic_bytes = if traffic_gb == 0 {
+                        None
+                    } else {
+                        match traffic_gb.checked_mul(1024 * 1024 * 1024) {
+                            Some(bytes) => Some(bytes),
+                            None => {
+                                self.user_manage_state.error =
+                                    Some("Traffic limit (GB) is too large".to_string());
+                                return;
+                            }
+                        }
+                    };
+
+                    if let Err(err) = self
+                        .db
+                        .set_user_active(user.id, self.user_manage_state.is_active)
+                    {
+                        self.user_manage_state.error = Some(err.to_string());
+                        return;
+                    }
+                    if let Err(err) =
+                        self.db
+                            .set_user_limits(user.id, max_connections, traffic_bytes, None)
+                    {
+                        self.user_manage_state.error = Some(err.to_string());
+                        return;
+                    }
                     self.pop_screen();
                 }
             }
@@ -2638,17 +3128,58 @@ impl App {
             ));
         }
 
+        let email_text = self.user_create_state.email_input.value.trim();
+        let email = if email_text.is_empty() {
+            None
+        } else {
+            if !email_text.contains('@')
+                || email_text.starts_with('@')
+                || email_text.ends_with('@')
+                || email_text.rsplit('@').next().unwrap_or("").contains(' ')
+                || !email_text.rsplit('@').next().unwrap_or("").contains('.')
+            {
+                return Err(crate::error::AppError::User(
+                    "Email format is invalid".to_string(),
+                ));
+            }
+            Some(email_text)
+        };
+
+        let max_devices = Self::parse_non_negative(
+            &self.user_create_state.max_devices_input.value,
+            "Max devices",
+        )?;
+        let traffic_gb = Self::parse_non_negative(
+            &self.user_create_state.traffic_limit_input.value,
+            "Traffic limit (GB)",
+        )?;
+
         ssh::validate_username(username)?;
         let keypair = ssh::generate_keypair(self.user_create_state.key_type, username)?;
 
         let encryption_key = self.get_or_create_encryption_key()?;
         let encrypted = crate::db::encrypt(&keypair.private_key, &encryption_key)?;
-        self.db.create_user(
+        let user_id = self.db.create_user(
             username,
+            email,
             &keypair.public_key,
             &encrypted,
             keypair.key_type.as_str(),
         )?;
+        let max_connections = if max_devices == 0 {
+            None
+        } else {
+            Some(max_devices)
+        };
+        let traffic_bytes = if traffic_gb == 0 {
+            None
+        } else {
+            Some(traffic_gb.checked_mul(1024 * 1024 * 1024).ok_or_else(|| {
+                crate::error::AppError::User("Traffic limit (GB) is too large".to_string())
+            })?)
+        };
+        self.db
+            .set_user_limits(user_id, max_connections, traffic_bytes, None)?;
 
         ssh::create_system_user(username)?;
         ssh::setup_authorized_keys(username, &keypair.public_key)?;
@@ -2663,6 +3194,45 @@ impl App {
             self.db.delete_user(user.id)?;
         }
         Ok(())
+    }
+
+    fn load_user_manage_state(&mut self, user: &User) {
+        let limits = self.db.get_user_limits(user.id).ok().flatten();
+        let max_devices = limits.as_ref().and_then(|l| l.max_connections).unwrap_or(0);
+        let traffic_bytes = limits
+            .as_ref()
+            .and_then(|l| l.traffic_quota_bytes)
+            .unwrap_or(0);
+        let traffic_gb = if traffic_bytes > 0 {
+            (traffic_bytes as f64 / 1024f64.powi(3)).round() as i64
+        } else {
+            0
+        };
+
+        self.user_manage_state = UserManageState {
+            focus: UserManageFocus::Status,
+            is_active: user.is_active,
+            max_devices_input: InputField::new(&max_devices.to_string()),
+            traffic_limit_input: InputField::new(&traffic_gb.to_string()),
+            error: None,
+        };
+    }
+
+    fn parse_non_negative(input: &str, field: &str) -> Result<i64> {
+        if input.trim().is_empty() {
+            return Ok(0);
+        }
+        let value = input
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| crate::error::AppError::User(format!("{} must be a number", field)))?;
+        if value < 0 {
+            return Err(crate::error::AppError::User(format!(
+                "{} must be non-negative",
+                field
+            )));
+        }
+        Ok(value)
     }
 
     fn generate_config_for_selected_user(&mut self) -> Result<()> {

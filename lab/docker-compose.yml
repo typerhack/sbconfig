@@ -8,16 +8,19 @@ services:
       dockerfile: Dockerfile
     container_name: sbconfig-lab
     hostname: sbconfig-lab
+    privileged: true
     ports:
       - "2222:22"      # SSH access
       - "7344:7344"    # Custom SSH port for sing-box
       - "10808:10808"  # sing-box proxy port
     volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
       - sbconfig-data:/var/lib/sbconfig
       - sbconfig-logs:/var/log/sbconfig
       - ./bin:/opt/sbconfig  # Mount for binary deployment
-    cap_add:
-      - SYS_ADMIN      # For user management
+    tmpfs:
+      - /run
+      - /run/lock
     security_opt:
       - seccomp:unconfined
     restart: unless-stopped

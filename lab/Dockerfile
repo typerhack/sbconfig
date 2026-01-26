@@ -3,9 +3,18 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV container=docker
 
 # Install dependencies (including build tools for Rust)
-RUN apt-get update && apt-get install -y \
+# Bootstrap CA certs over HTTP, then switch to HTTPS with retries.
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates && \
+    sed -i 's|http://ports.ubuntu.com|https://ports.ubuntu.com|g' /etc/apt/sources.list && \
+    apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    systemd \
+    systemd-sysv \
+    dbus \
     openssh-server \
     curl \
     wget \
@@ -15,7 +24,7 @@ RUN apt-get update && apt-get install -y \
     nano \
     net-tools \
     iproute2 \
-    ca-certificates \
+    iputils-ping \
     gnupg \
     build-essential \
     pkg-config \
@@ -50,11 +59,15 @@ RUN mkdir -p /var/lib/sbconfig /var/log/sbconfig /usr/local/bin
 RUN mkdir -p /etc/sing-box && \
     echo '{"log":{"level":"info"}}' > /etc/sing-box/config.json
 
+# Enable SSH service under systemd (ignore if already enabled)
+RUN ln -s /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/ssh.service || true
+
 # Expose ports
 # 22 = SSH (internal, mapped to 2222 on host)
 # 7344 = Custom SSH port for sing-box proxy users (example)
 # 10808 = sing-box proxy port
 EXPOSE 22 7344 10808
 
-# Start SSH
-CMD ["/usr/sbin/sshd", "-D"]
+# Let systemd be PID 1
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

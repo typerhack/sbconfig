@@ -27,14 +27,14 @@ pub fn validate_custom_port(port: u16, existing_ports: &[u16]) -> Result<()> {
         ));
     }
 
-    if port < MIN_PROXY_PORT || port > MAX_PROXY_PORT {
+    if !(MIN_PROXY_PORT..=MAX_PROXY_PORT).contains(&port) {
         return Err(AppError::Config(format!(
             "Custom SSH port must be between {} and {}",
             MIN_PROXY_PORT, MAX_PROXY_PORT
         )));
     }
 
-    if existing_ports.iter().any(|existing| *existing == port) {
+    if existing_ports.contains(&port) {
         return Err(AppError::Config(format!(
             "Custom SSH port {} already configured",
             port
@@ -54,6 +54,15 @@ pub fn validate_custom_port(port: u16, existing_ports: &[u16]) -> Result<()> {
 pub fn add_port(path: &Path, port: u16) -> Result<bool> {
     let contents = fs::read_to_string(path).map_err(AppError::Io)?;
     let (updated, changed) = apply_port_update(&contents, port, true)?;
+    if changed {
+        fs::write(path, updated).map_err(AppError::Io)?;
+    }
+    Ok(changed)
+}
+
+pub fn remove_port(path: &Path, port: u16) -> Result<bool> {
+    let contents = fs::read_to_string(path).map_err(AppError::Io)?;
+    let (updated, changed) = apply_port_remove(&contents, port)?;
     if changed {
         fs::write(path, updated).map_err(AppError::Io)?;
     }
@@ -88,7 +97,7 @@ fn parse_ports(contents: &str) -> Vec<u16> {
 
 fn apply_port_update(contents: &str, port: u16, check_available: bool) -> Result<(String, bool)> {
     let existing_ports = parse_ports(contents);
-    if existing_ports.iter().any(|existing| *existing == port) {
+    if existing_ports.contains(&port) {
         return Ok((contents.to_string(), false));
     }
 
@@ -98,7 +107,7 @@ fn apply_port_update(contents: &str, port: u16, check_available: bool) -> Result
         ));
     }
 
-    if port < MIN_PROXY_PORT || port > MAX_PROXY_PORT {
+    if !(MIN_PROXY_PORT..=MAX_PROXY_PORT).contains(&port) {
         return Err(AppError::Config(format!(
             "Custom SSH port must be between {} and {}",
             MIN_PROXY_PORT, MAX_PROXY_PORT
@@ -126,6 +135,42 @@ fn apply_port_update(contents: &str, port: u16, check_available: bool) -> Result
     let mut output = lines.join("\n");
     output.push('\n');
 
+    Ok((output, true))
+}
+
+fn apply_port_remove(contents: &str, port: u16) -> Result<(String, bool)> {
+    let mut changed = false;
+    let mut lines: Vec<String> = Vec::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            lines.push(line.to_string());
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let directive = parts.next().unwrap_or_default();
+        if directive.eq_ignore_ascii_case("Port") {
+            if let Some(port_str) = parts.next() {
+                if let Ok(existing_port) = port_str.parse::<u16>() {
+                    if existing_port == port {
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        lines.push(line.to_string());
+    }
+
+    if !changed {
+        return Ok((contents.to_string(), false));
+    }
+
+    let mut output = lines.join("\n");
+    output.push('\n');
     Ok((output, true))
 }
 
@@ -158,6 +203,23 @@ Port 22
     fn add_port_is_noop_when_existing() {
         let contents = "Port 22\nPort 7344\n";
         let (updated, changed) = apply_port_update(contents, 7344, false).unwrap();
+        assert!(!changed);
+        assert_eq!(updated, contents);
+    }
+
+    #[test]
+    fn remove_port_removes_target_port() {
+        let contents = "Port 22\nPort 7344\nMatch User root\n  X11Forwarding no\n";
+        let (updated, changed) = apply_port_remove(contents, 7344).unwrap();
+        assert!(changed);
+        let expected = "Port 22\nMatch User root\n  X11Forwarding no\n";
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn remove_port_is_noop_when_missing() {
+        let contents = "Port 22\n";
+        let (updated, changed) = apply_port_remove(contents, 7344).unwrap();
         assert!(!changed);
         assert_eq!(updated, contents);
     }

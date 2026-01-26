@@ -69,11 +69,7 @@ fn run_command_capture(cmd: &str, args: &[&str]) -> Result<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let combined = format!(
-        "{}{}",
-        stdout,
-        if stderr.is_empty() { "" } else { "\n" }
-    ) + &stderr;
+    let combined = format!("{}{}", stdout, if stderr.is_empty() { "" } else { "\n" }) + &stderr;
 
     if output.status.success() {
         Ok(combined.trim().to_string())
@@ -93,7 +89,10 @@ pub fn install_steps() -> Result<Vec<CommandSpec>> {
         Ok(vec![CommandSpec::new(
             "curl -fsSL https://sing-box.app/deb-install.sh | bash",
             "bash",
-            &["-c", "curl -fsSL https://sing-box.app/deb-install.sh | bash"],
+            &[
+                "-c",
+                "curl -fsSL https://sing-box.app/deb-install.sh | bash",
+            ],
         )])
     } else {
         match detect_package_manager() {
@@ -138,7 +137,9 @@ pub fn install_steps() -> Result<Vec<CommandSpec>> {
 }
 
 pub fn reinstall_steps() -> Result<Vec<CommandSpec>> {
-    install_steps()
+    let mut steps = uninstall_steps()?;
+    steps.extend(install_steps()?);
+    Ok(steps)
 }
 
 pub fn uninstall_steps() -> Result<Vec<CommandSpec>> {

@@ -4,10 +4,12 @@
 
 mod keys;
 mod ports;
+mod service;
 mod users;
 
 pub use keys::{generate_keypair, KeyPair, KeyType};
-pub use ports::{add_port, list_ports, sshd_config_path, validate_custom_port};
+pub use ports::{add_port, list_ports, remove_port, sshd_config_path, validate_custom_port};
+pub use service::restart_sshd;
 pub use users::{
     create_system_user, delete_system_user, setup_authorized_keys, user_exists, validate_username,
 };

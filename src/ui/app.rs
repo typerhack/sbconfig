@@ -11,6 +11,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use rand::RngCore;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use std::fs;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -123,9 +124,11 @@ struct ConfigState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsFocus {
-    ServerAddress,
-    SshPort,
-    Mode,
+    ChangeServerAddress,
+    UpdateSshPort,
+    ChangeMode,
+    RemoveSshPort,
+    ViewSshConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +138,16 @@ struct SettingsEditState {
     mode: ServerMode,
     focus: SettingsFocus,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsModal {
+    None,
+    ServerAddress,
+    SshPort,
+    Mode,
+    RemoveSshPort,
+    ViewSshConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +241,29 @@ impl InputField {
             self.value.remove(self.cursor);
         }
     }
+}
+
+fn render_input_spans(field: &InputField, width: usize) -> Vec<Span<'static>> {
+    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+    let target_width = width.max(1);
+    let mut display = field.value.clone();
+    if display.len() < target_width {
+        display.push_str(&"_".repeat(target_width - display.len()));
+    }
+    let cursor = field.cursor.min(display.len().saturating_sub(1));
+    let before = &display[..cursor];
+    let after = &display[cursor..];
+    let cursor_char = after.chars().next().unwrap_or('_');
+    let after_rest = if after.is_empty() || cursor + cursor_char.len_utf8() > display.len() {
+        ""
+    } else {
+        &display[cursor + cursor_char.len_utf8()..]
+    };
+    vec![
+        Span::raw(before.to_string()),
+        Span::styled(cursor_char.to_string(), cursor_style),
+        Span::raw(after_rest.to_string()),
+    ]
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -334,7 +370,6 @@ pub enum Screen {
     ConfigPlatform,
     ConfigOutput,
     Settings,
-    SettingsEdit,
     Logs,
 }
 
@@ -352,6 +387,9 @@ pub struct App {
     user_delete_state: UserDeleteState,
     config_state: ConfigState,
     settings_edit_state: SettingsEditState,
+    settings_modal: SettingsModal,
+    settings_modal_error: Option<String>,
+    settings_modal_scroll: u16,
     logs_state: LogsState,
     status_message: Option<String>,
     singbox_action_index: usize,
@@ -432,9 +470,12 @@ impl App {
                 server_input: InputField::new(""),
                 ssh_port_input: InputField::new(&ssh_port),
                 mode: ServerMode::Production,
-                focus: SettingsFocus::ServerAddress,
+                focus: SettingsFocus::ChangeServerAddress,
                 error: None,
             },
+            settings_modal: SettingsModal::None,
+            settings_modal_error: None,
+            settings_modal_scroll: 0,
             logs_state: LogsState {
                 session_index: 0,
                 scroll: 0,
@@ -487,7 +528,6 @@ impl App {
             }
             Screen::ConfigOutput => format!(" sbconfig v{} > Config Output ", Self::app_version()),
             Screen::Settings => format!(" sbconfig v{} > Settings ", Self::app_version()),
-            Screen::SettingsEdit => format!(" sbconfig v{} > Edit Settings ", Self::app_version()),
             Screen::Logs => format!(" sbconfig v{} > Logs ", Self::app_version()),
         };
         let header = Block::default()
@@ -508,7 +548,6 @@ impl App {
             Screen::ConfigPlatform => self.draw_config_platform(frame, chunks[1]),
             Screen::ConfigOutput => self.draw_config_output(frame, chunks[1]),
             Screen::Settings => self.draw_settings(frame, chunks[1]),
-            Screen::SettingsEdit => self.draw_settings_edit(frame, chunks[1]),
             Screen::Logs => self.draw_logs(frame, chunks[1]),
         }
 
@@ -530,9 +569,7 @@ impl App {
             Screen::UserDelete => " [y] Confirm  [n] Cancel  [Esc] Back ",
             Screen::ConfigPlatform => " [Up/Down] Navigate  [Enter] Select  [Esc] Back ",
             Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back ",
-            Screen::SettingsEdit => {
-                " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Save  [Esc] Cancel "
-            }
+            Screen::Settings => " [Up/Down] Navigate  [Enter] Edit  [Esc] Back  [q] Quit ",
             _ => " [Esc] Back  [b] Back  [q] Quit ",
         };
         let footer = Paragraph::new(footer_text)
@@ -804,7 +841,13 @@ impl App {
             )));
         }
 
-        let paragraph = Paragraph::new(content).block(Block::default());
+        let paragraph = if matches!(self.settings_modal, SettingsModal::ViewSshConfig) {
+            Paragraph::new(content)
+                .block(Block::default())
+                .scroll((self.settings_modal_scroll, 0))
+        } else {
+            Paragraph::new(content).block(Block::default())
+        };
         frame.render_widget(paragraph, inner);
     }
 
@@ -867,7 +910,11 @@ impl App {
             Line::from(Span::styled(" Installation", heading_style)),
             Line::from(format!(
                 "  Status:     {}",
-                if info.installed { "Installed" } else { "Not Found" }
+                if info.installed {
+                    "Installed"
+                } else {
+                    "Not Found"
+                }
             )),
             Line::from(format!(
                 "  Version:    {}",
@@ -1134,61 +1181,6 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn draw_settings_edit(&self, frame: &mut Frame, area: Rect) {
-        let server_style = if self.settings_edit_state.focus == SettingsFocus::ServerAddress {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        let port_style = if self.settings_edit_state.focus == SettingsFocus::SshPort {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        let mode_style = if self.settings_edit_state.focus == SettingsFocus::Mode {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        let mode_line = match self.settings_edit_state.mode {
-            ServerMode::Production => "(●) Production  ( ) Development",
-            ServerMode::Development => "( ) Production  (●) Development",
-        };
-
-        let mut lines = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(" Server Address: ", server_style),
-                Span::raw(format!("[{}]", self.settings_edit_state.server_input.value)),
-            ]),
-            Line::from(vec![
-                Span::styled(" SSH Port:       ", port_style),
-                Span::raw(format!(
-                    "[{}]",
-                    self.settings_edit_state.ssh_port_input.value
-                )),
-            ]),
-            Line::from(vec![
-                Span::styled(" Mode:           ", mode_style),
-                Span::raw(mode_line),
-            ]),
-        ];
-
-        if let Some(error) = &self.settings_edit_state.error {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                error,
-                Style::default().fg(Color::Red),
-            )));
-        }
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Edit Settings ");
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
-    }
-
     fn draw_users(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1313,18 +1305,69 @@ impl App {
     }
 
     fn draw_settings(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(area);
+
+        let heading_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+
+        let actions = [
+            (SettingsFocus::ChangeServerAddress, "Change Server Address"),
+            (SettingsFocus::UpdateSshPort, "Update SSH Port"),
+            (SettingsFocus::ChangeMode, "Change Mode"),
+            (SettingsFocus::RemoveSshPort, "Remove SSH Port"),
+            (SettingsFocus::ViewSshConfig, "View SSH Config"),
+        ];
+
+        let selected_index = actions
+            .iter()
+            .position(|(focus, _)| *focus == self.settings_edit_state.focus)
+            .unwrap_or(0);
+
+        let action_items: Vec<ListItem> = actions
+            .iter()
+            .map(|(_, label)| ListItem::new(Line::from(format!(" {}", label))))
+            .collect();
+
+        let action_block = Block::default().borders(Borders::ALL).title(" Actions ");
+        let action_list = List::new(action_items)
+            .block(action_block)
+            .highlight_symbol(" > ")
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let mut action_state = ListState::default();
+        action_state.select(Some(selected_index));
+        frame.render_stateful_widget(action_list, chunks[0], &mut action_state);
+
         let server_addr = self
             .db
             .get_setting("server_address")
             .ok()
             .flatten()
-            .unwrap_or_else(|| "Not configured".to_string());
+            .unwrap_or_default();
+        let server_addr = if server_addr.trim().is_empty() {
+            "Not configured".to_string()
+        } else {
+            server_addr
+        };
         let ssh_port = self
             .db
             .get_setting("ssh_port")
             .ok()
             .flatten()
-            .unwrap_or_else(|| "Not configured".to_string());
+            .unwrap_or_default();
+        let ssh_port = if ssh_port.trim().is_empty() {
+            "Not configured".to_string()
+        } else {
+            ssh_port
+        };
         let mode = self
             .db
             .get_setting("mode")
@@ -1332,38 +1375,161 @@ impl App {
             .flatten()
             .unwrap_or_else(|| "production".to_string());
 
-        let text = vec![
+        let ports_info = match ssh::list_ports(&ssh::sshd_config_path()) {
+            Ok(ports) if !ports.is_empty() => ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            Ok(_) => "No ports found".to_string(),
+            Err(err) => format!("Unavailable ({})", err),
+        };
+
+        let status_lines = vec![
+            Line::from(Span::styled(" Current Settings", heading_style)),
             Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "  Server Address: ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(&server_addr),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  SSH Port:       ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(&ssh_port),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "  Mode:           ",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(&mode),
-            ]),
+            Line::from(format!("  Server Address: {}", server_addr)),
+            Line::from(format!("  SSH Port:       {}", ssh_port)),
+            Line::from(format!("  Mode:           {}", mode)),
             Line::from(""),
-            Line::from(Span::styled(
-                "  Press [e] to edit settings",
-                Style::default().fg(Color::Cyan),
+            Line::from(Span::styled(" SSH Config", heading_style)),
+            Line::from(""),
+            Line::from(format!(
+                "  sshd_config: {}",
+                ssh::sshd_config_path().display()
             )),
+            Line::from(format!("  Ports:       {}", ports_info)),
+            Line::from(""),
+            Line::from(Span::styled(" Tips", heading_style)),
+            Line::from(""),
+            Line::from("  Use arrows and Enter to edit."),
         ];
-        let block = Block::default().borders(Borders::ALL).title(" Settings ");
-        let paragraph = Paragraph::new(text).block(block);
-        frame.render_widget(paragraph, area);
+
+        let status_block = Block::default().borders(Borders::ALL).title(" Status ");
+        let status_paragraph = Paragraph::new(status_lines).block(status_block);
+        frame.render_widget(status_paragraph, chunks[1]);
+
+        if self.settings_modal != SettingsModal::None {
+            self.draw_settings_modal(frame);
+        }
+    }
+
+    fn draw_settings_modal(&self, frame: &mut Frame) {
+        let area = frame.area();
+        let popup_area = centered_rect(70, 50, area);
+        let (title, lines) = match self.settings_modal {
+            SettingsModal::ServerAddress => {
+                let mut spans = vec![Span::raw(" Value: ")];
+                spans.extend(render_input_spans(
+                    &self.settings_edit_state.server_input,
+                    32,
+                ));
+                let lines = vec![
+                    Line::from(" Enter server address (domain or IP)."),
+                    Line::from(""),
+                    Line::from(spans),
+                    Line::from(""),
+                    Line::from(" [Enter] OK  [Esc] Cancel"),
+                ];
+                (" Server Address ", lines)
+            }
+            SettingsModal::SshPort => {
+                let mut spans = vec![Span::raw(" Value: ")];
+                spans.extend(render_input_spans(
+                    &self.settings_edit_state.ssh_port_input,
+                    6,
+                ));
+                let lines = vec![
+                    Line::from(" Enter custom SSH port for proxy users."),
+                    Line::from(" Must be between 1024 and 60000 (not 22)."),
+                    Line::from(" Changes sshd_config and restarts SSH."),
+                    Line::from(""),
+                    Line::from(spans),
+                    Line::from(""),
+                    Line::from(" [Enter] OK  [Esc] Cancel"),
+                ];
+                (" SSH Port ", lines)
+            }
+            SettingsModal::Mode => {
+                let mode_line = match self.settings_edit_state.mode {
+                    ServerMode::Production => "(●) Production  ( ) Development",
+                    ServerMode::Development => "( ) Production  (●) Development",
+                };
+                let lines = vec![
+                    Line::from(" Select server mode."),
+                    Line::from(""),
+                    Line::from(format!(" {}", mode_line)),
+                    Line::from(""),
+                    Line::from(" [Left/Right] Toggle  [Enter] OK  [Esc] Cancel"),
+                ];
+                (" Server Mode ", lines)
+            }
+            SettingsModal::RemoveSshPort => {
+                let current = self
+                    .db
+                    .get_setting("ssh_port")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "Not configured".to_string());
+                let lines = vec![
+                    Line::from(" Remove custom SSH port from sshd_config."),
+                    Line::from(""),
+                    Line::from(format!(" Current: {}", current)),
+                    Line::from(""),
+                    Line::from(" [Enter] OK  [Esc] Cancel"),
+                ];
+                (" Remove SSH Port ", lines)
+            }
+            SettingsModal::ViewSshConfig => {
+                let path = ssh::sshd_config_path();
+                let contents = fs::read_to_string(&path)
+                    .unwrap_or_else(|err| format!("Failed to read sshd_config: {}", err));
+                let mut lines = Vec::new();
+                lines.push(Line::from(" sshd_config"));
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(" Path: {}", path.display())));
+                lines.push(Line::from(""));
+                for line in contents.lines() {
+                    lines.push(Line::from(format!(" {}", line)));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    " [Up/Down] Scroll  [PgUp/PgDn] Page  [Home] Top  [Esc] Close",
+                ));
+                (" SSH Config ", lines)
+            }
+            SettingsModal::None => ("", Vec::new()),
+        };
+
+        let block = Block::default().borders(Borders::ALL).title(title);
+        frame.render_widget(Clear, popup_area);
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let mut content = lines;
+        if let Some(error) = &self.settings_modal_error {
+            content.push(Line::from(""));
+            content.push(Line::from(Span::styled(
+                format!(" Error: {}", error),
+                Style::default().fg(Color::Red),
+            )));
+        }
+
+        let scroll = if matches!(self.settings_modal, SettingsModal::ViewSshConfig) {
+            let max_scroll = content.len().saturating_sub(inner.height as usize) as u16;
+            self.settings_modal_scroll.min(max_scroll)
+        } else {
+            0
+        };
+
+        let paragraph = if matches!(self.settings_modal, SettingsModal::ViewSshConfig) {
+            Paragraph::new(content)
+                .block(Block::default())
+                .scroll((scroll, 0))
+        } else {
+            Paragraph::new(content).block(Block::default())
+        };
+        frame.render_widget(paragraph, inner);
     }
 
     fn draw_logs(&self, frame: &mut Frame, area: Rect) {
@@ -1434,8 +1600,7 @@ impl App {
                         Screen::Configs => self.handle_generic_input(key.code),
                         Screen::ConfigPlatform => self.handle_config_platform_input(key.code),
                         Screen::ConfigOutput => self.handle_config_output_input(key.code),
-                        Screen::Settings => self.handle_generic_input(key.code),
-                        Screen::SettingsEdit => self.handle_settings_edit_input(key.code),
+                        Screen::Settings => self.handle_settings_input(key.code),
                         Screen::Logs => self.handle_logs_input(key.code),
                     }
                 }
@@ -1568,14 +1733,14 @@ impl App {
                     self.autodetect_public_ip();
                 }
                 KeyCode::Char(ch) => {
-                    if self.setup_state.focus == SetupFocus::DomainInput {
-                        if ch.is_ascii_graphic() || ch == '.' || ch == '-' {
-                            self.setup_state.domain_input.insert_char(ch);
-                        }
-                    } else if self.setup_state.focus == SetupFocus::IpInput {
-                        if ch.is_ascii_digit() || ch == '.' {
-                            self.setup_state.ip_input.insert_char(ch);
-                        }
+                    if self.setup_state.focus == SetupFocus::DomainInput
+                        && (ch.is_ascii_graphic() || ch == '.' || ch == '-')
+                    {
+                        self.setup_state.domain_input.insert_char(ch);
+                    } else if self.setup_state.focus == SetupFocus::IpInput
+                        && (ch.is_ascii_digit() || ch == '.')
+                    {
+                        self.setup_state.ip_input.insert_char(ch);
                     }
                 }
                 KeyCode::Backspace => {
@@ -1590,8 +1755,8 @@ impl App {
                 }
                 _ => {}
             },
-            SetupStep::Confirm => match key {
-                KeyCode::Enter => {
+            SetupStep::Confirm => {
+                if key == KeyCode::Enter {
                     if let Err(err) = self.save_setup_settings() {
                         self.status_message = Some(err.to_string());
                     } else {
@@ -1599,8 +1764,7 @@ impl App {
                         self.screen = Screen::Dashboard;
                     }
                 }
-                _ => {}
-            },
+            }
         }
     }
 
@@ -1629,7 +1793,9 @@ impl App {
             self.singbox_action_index = 0;
         }
         if !actions[self.singbox_action_index].1 {
-            if let Some(next) = self.next_enabled_action_index(&actions, self.singbox_action_index, 1) {
+            if let Some(next) =
+                self.next_enabled_action_index(&actions, self.singbox_action_index, 1)
+            {
                 self.singbox_action_index = next;
             }
         }
@@ -1755,10 +1921,10 @@ impl App {
                 }
             }
             KeyCode::Char(ch) => {
-                if self.user_create_state.focus == UserCreateFocus::Username {
-                    if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-' {
-                        self.user_create_state.username_input.insert_char(ch);
-                    }
+                if self.user_create_state.focus == UserCreateFocus::Username
+                    && (ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+                {
+                    self.user_create_state.username_input.insert_char(ch);
                 }
             }
             KeyCode::Backspace => {
@@ -1835,48 +2001,274 @@ impl App {
         }
     }
 
-    fn handle_settings_edit_input(&mut self, key: KeyCode) {
+    fn handle_settings_input(&mut self, key: KeyCode) {
+        if self.settings_modal != SettingsModal::None {
+            match self.settings_modal {
+                SettingsModal::ServerAddress => match key {
+                    KeyCode::Esc => {
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    KeyCode::Enter => {
+                        let value = self.settings_edit_state.server_input.value.trim();
+                        if value.is_empty() {
+                            self.settings_modal_error =
+                                Some("Server address cannot be empty".to_string());
+                            return;
+                        }
+                        if let Err(err) = self.db.set_setting("server_address", value) {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    KeyCode::Backspace => {
+                        self.settings_edit_state.server_input.backspace();
+                    }
+                    KeyCode::Char(ch) => {
+                        if ch.is_ascii_graphic() || ch == '.' || ch == '-' {
+                            self.settings_edit_state.server_input.insert_char(ch);
+                        }
+                    }
+                    _ => {}
+                },
+                SettingsModal::SshPort => match key {
+                    KeyCode::Esc => {
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    KeyCode::Enter => {
+                        let port_text = self.settings_edit_state.ssh_port_input.value.trim();
+                        let port = match port_text.parse::<u16>() {
+                            Ok(port) => port,
+                            Err(_) => {
+                                self.settings_modal_error =
+                                    Some("SSH port must be numeric".to_string());
+                                return;
+                            }
+                        };
+
+                        let path = ssh::sshd_config_path();
+                        let existing_ports = match ssh::list_ports(&path) {
+                            Ok(ports) => ports,
+                            Err(err) => {
+                                self.settings_modal_error = Some(err.to_string());
+                                return;
+                            }
+                        };
+                        let old_port = self
+                            .db
+                            .get_setting("ssh_port")
+                            .ok()
+                            .flatten()
+                            .and_then(|value| value.parse::<u16>().ok());
+
+                        if port == 22 {
+                            self.settings_modal_error =
+                                Some("Custom SSH port must not be 22".to_string());
+                            return;
+                        }
+                        if !(1024..=60000).contains(&port) {
+                            self.settings_modal_error =
+                                Some("Custom SSH port must be between 1024 and 60000".to_string());
+                            return;
+                        }
+                        if !existing_ports.contains(&port)
+                            && !crate::utils::system::is_port_available(port)
+                        {
+                            self.settings_modal_error =
+                                Some("Custom SSH port is already in use".to_string());
+                            return;
+                        }
+                        if existing_ports.contains(&port) && old_port.is_some_and(|old| old != port)
+                        {
+                            self.settings_modal_error = Some(
+                                "SSH port is already configured; choose a new port".to_string(),
+                            );
+                            return;
+                        }
+
+                        if let Some(old_port) = old_port {
+                            if old_port != port && existing_ports.contains(&old_port) {
+                                if let Err(err) = ssh::remove_port(&path, old_port) {
+                                    self.settings_modal_error = Some(err.to_string());
+                                    return;
+                                }
+                            }
+                        }
+                        if let Err(err) = ssh::add_port(&path, port) {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+
+                        if let Err(err) = ssh::restart_sshd() {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+
+                        if let Err(err) = self.db.set_setting("ssh_port", port_text) {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    KeyCode::Backspace => {
+                        self.settings_edit_state.ssh_port_input.backspace();
+                    }
+                    KeyCode::Char(ch) => {
+                        if ch.is_ascii_digit() {
+                            self.settings_edit_state.ssh_port_input.insert_char(ch);
+                        }
+                    }
+                    _ => {}
+                },
+                SettingsModal::Mode => match key {
+                    KeyCode::Left | KeyCode::Right => {
+                        self.settings_edit_state.mode = match self.settings_edit_state.mode {
+                            ServerMode::Production => ServerMode::Development,
+                            ServerMode::Development => ServerMode::Production,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        let mode = match self.settings_edit_state.mode {
+                            ServerMode::Production => "production",
+                            ServerMode::Development => "development",
+                        };
+                        if let Err(err) = self.db.set_setting("mode", mode) {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    KeyCode::Esc => {
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                    }
+                    _ => {}
+                },
+                SettingsModal::RemoveSshPort => match key {
+                    KeyCode::Esc => {
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                        self.settings_modal_scroll = 0;
+                    }
+                    KeyCode::Enter => {
+                        let port_text = self
+                            .db
+                            .get_setting("ssh_port")
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
+                        let port = match port_text.parse::<u16>() {
+                            Ok(port) => port,
+                            Err(_) => {
+                                self.settings_modal_error =
+                                    Some("No valid SSH port configured".to_string());
+                                return;
+                            }
+                        };
+
+                        let path = ssh::sshd_config_path();
+                        let changed = match ssh::remove_port(&path, port) {
+                            Ok(changed) => changed,
+                            Err(err) => {
+                                self.settings_modal_error = Some(err.to_string());
+                                return;
+                            }
+                        };
+                        if changed {
+                            if let Err(err) = ssh::restart_sshd() {
+                                self.settings_modal_error = Some(err.to_string());
+                                return;
+                            }
+                        }
+                        if let Err(err) = self.db.set_setting("ssh_port", "") {
+                            self.settings_modal_error = Some(err.to_string());
+                            return;
+                        }
+
+                        if let Some(port) = crate::utils::system::find_available_port(1024, 60000) {
+                            self.settings_edit_state
+                                .ssh_port_input
+                                .set(&port.to_string());
+                        } else {
+                            self.settings_edit_state.ssh_port_input.set("");
+                        }
+                        self.settings_modal = SettingsModal::SshPort;
+                        self.settings_modal_error = Some(
+                            "Custom SSH port required for configs. Add a port or press Esc to skip."
+                                .to_string(),
+                        );
+                        self.settings_modal_scroll = 0;
+                    }
+                    _ => {}
+                },
+                SettingsModal::ViewSshConfig => match key {
+                    KeyCode::Esc | KeyCode::Enter => {
+                        self.settings_modal = SettingsModal::None;
+                        self.settings_modal_error = None;
+                        self.settings_modal_scroll = 0;
+                    }
+                    KeyCode::Up => {
+                        self.settings_modal_scroll = self.settings_modal_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        self.settings_modal_scroll = self.settings_modal_scroll.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        self.settings_modal_scroll = self.settings_modal_scroll.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        self.settings_modal_scroll = self.settings_modal_scroll.saturating_add(5);
+                    }
+                    KeyCode::Home => {
+                        self.settings_modal_scroll = 0;
+                    }
+                    _ => {}
+                },
+                SettingsModal::None => {}
+            }
+            return;
+        }
+
         match key {
-            KeyCode::Esc => self.pop_screen(),
-            KeyCode::Up | KeyCode::Down => {
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.running = false;
+            }
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Up => {
                 self.settings_edit_state.focus = match self.settings_edit_state.focus {
-                    SettingsFocus::ServerAddress => SettingsFocus::SshPort,
-                    SettingsFocus::SshPort => SettingsFocus::Mode,
-                    SettingsFocus::Mode => SettingsFocus::ServerAddress,
+                    SettingsFocus::ChangeServerAddress => SettingsFocus::ViewSshConfig,
+                    SettingsFocus::UpdateSshPort => SettingsFocus::ChangeServerAddress,
+                    SettingsFocus::ChangeMode => SettingsFocus::UpdateSshPort,
+                    SettingsFocus::RemoveSshPort => SettingsFocus::ChangeMode,
+                    SettingsFocus::ViewSshConfig => SettingsFocus::RemoveSshPort,
                 };
             }
-            KeyCode::Left | KeyCode::Right => {
-                if self.settings_edit_state.focus == SettingsFocus::Mode {
-                    self.settings_edit_state.mode = match self.settings_edit_state.mode {
-                        ServerMode::Production => ServerMode::Development,
-                        ServerMode::Development => ServerMode::Production,
-                    };
-                }
-            }
-            KeyCode::Char(ch) => {
-                if self.settings_edit_state.focus == SettingsFocus::ServerAddress {
-                    if ch.is_ascii_graphic() || ch == '.' || ch == '-' {
-                        self.settings_edit_state.server_input.insert_char(ch);
-                    }
-                } else if self.settings_edit_state.focus == SettingsFocus::SshPort {
-                    if ch.is_ascii_digit() {
-                        self.settings_edit_state.ssh_port_input.insert_char(ch);
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                if self.settings_edit_state.focus == SettingsFocus::ServerAddress {
-                    self.settings_edit_state.server_input.backspace();
-                } else if self.settings_edit_state.focus == SettingsFocus::SshPort {
-                    self.settings_edit_state.ssh_port_input.backspace();
-                }
+            KeyCode::Down => {
+                self.settings_edit_state.focus = match self.settings_edit_state.focus {
+                    SettingsFocus::ChangeServerAddress => SettingsFocus::UpdateSshPort,
+                    SettingsFocus::UpdateSshPort => SettingsFocus::ChangeMode,
+                    SettingsFocus::ChangeMode => SettingsFocus::RemoveSshPort,
+                    SettingsFocus::RemoveSshPort => SettingsFocus::ViewSshConfig,
+                    SettingsFocus::ViewSshConfig => SettingsFocus::ChangeServerAddress,
+                };
             }
             KeyCode::Enter => {
-                if let Err(err) = self.save_settings_edit() {
-                    self.settings_edit_state.error = Some(err.to_string());
-                } else {
-                    self.pop_screen();
-                }
+                self.load_settings_edit();
+                self.settings_modal_error = None;
+                self.settings_modal_scroll = 0;
+                self.settings_modal = match self.settings_edit_state.focus {
+                    SettingsFocus::ChangeServerAddress => SettingsModal::ServerAddress,
+                    SettingsFocus::UpdateSshPort => SettingsModal::SshPort,
+                    SettingsFocus::ChangeMode => SettingsModal::Mode,
+                    SettingsFocus::RemoveSshPort => SettingsModal::RemoveSshPort,
+                    SettingsFocus::ViewSshConfig => SettingsModal::ViewSshConfig,
+                };
             }
             _ => {}
         }
@@ -1915,12 +2307,6 @@ impl App {
             }
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => {
                 self.pop_screen();
-            }
-            KeyCode::Char('e') | KeyCode::Char('E') => {
-                if self.screen == Screen::Settings {
-                    self.load_settings_edit();
-                    self.push_screen(Screen::SettingsEdit);
-                }
             }
             _ => {}
         }
@@ -1973,28 +2359,6 @@ impl App {
             ServerMode::Production
         };
         self.settings_edit_state.error = None;
-    }
-
-    fn save_settings_edit(&mut self) -> Result<()> {
-        let server = self.settings_edit_state.server_input.value.trim();
-        let port = self.settings_edit_state.ssh_port_input.value.trim();
-        if server.is_empty() {
-            return Err(crate::error::AppError::Config(
-                "Server address cannot be empty".to_string(),
-            ));
-        }
-        port.parse::<u16>()
-            .map_err(|_| crate::error::AppError::Config("SSH port must be numeric".to_string()))?;
-
-        let mode = match self.settings_edit_state.mode {
-            ServerMode::Production => "production",
-            ServerMode::Development => "development",
-        };
-
-        self.db.set_setting("server_address", server)?;
-        self.db.set_setting("ssh_port", port)?;
-        self.db.set_setting("mode", mode)?;
-        Ok(())
     }
 
     fn save_setup_settings(&mut self) -> Result<()> {
@@ -2098,7 +2462,7 @@ impl App {
     where
         F: FnOnce() -> Result<Vec<singbox::CommandSpec>> + Send + 'static,
     {
-        if self.singbox_task.as_ref().map_or(false, |t| t.running) {
+        if self.singbox_task.as_ref().is_some_and(|t| t.running) {
             return;
         }
 

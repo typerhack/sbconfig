@@ -25,7 +25,7 @@ struct Cli {
     dev: bool,
 
     /// Initialize the database and exit
-    #[arg(long, conflicts_with = "command")]
+    #[arg(long)]
     init_db: bool,
 
     #[command(subcommand)]

@@ -2171,7 +2171,8 @@ impl App {
             if let Some(task) = &mut self.singbox_task {
                 match event {
                     SingboxTaskEvent::Log(line) => {
-                        task.logs.push(line);
+                        let cleaned = line.replace('\r', "");
+                        task.logs.push(cleaned);
                         if task.logs.len() > 200 {
                             let excess = task.logs.len() - 200;
                             task.logs.drain(0..excess);
@@ -2217,7 +2218,7 @@ impl App {
             (SingboxAction::Disable, installed && service_available),
             (SingboxAction::Refresh, true),
             (SingboxAction::Install, !installed),
-            (SingboxAction::Reinstall, installed && status == ServiceStatus::NotFound),
+            (SingboxAction::Reinstall, installed),
             (SingboxAction::Uninstall, installed),
         ]
     }

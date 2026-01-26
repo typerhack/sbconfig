@@ -871,36 +871,46 @@ impl App {
             ServiceStatus::Unknown => "Unknown",
         };
 
-        let actions = self.singbox_actions(&info, status);
-        let selected_index = if self.singbox_action_index < actions.len() {
+        let actions_info = self.singbox_actions(&info, status);
+        let selected_index = if self.singbox_action_index < actions_info.len() {
             self.singbox_action_index
         } else {
             0
         };
-        let actions: Vec<ListItem> = actions
+        let actions: Vec<ListItem> = actions_info
             .iter()
-            .enumerate()
-            .map(|(index, (action, enabled))| {
-                let prefix = if index == selected_index && *enabled {
-                    "> "
-                } else {
-                    "  "
-                };
+            .map(|(action, enabled)| {
                 let style = if *enabled {
                     Style::default()
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
                 ListItem::new(Line::from(Span::styled(
-                    format!("{}{}", prefix, action.label()),
+                    format!(" {}", action.label()),
                     style,
                 )))
             })
             .collect();
 
         let action_block = Block::default().borders(Borders::ALL).title(" Actions ");
-        let action_list = List::new(actions).block(action_block);
-        frame.render_widget(action_list, chunks[0]);
+        let action_list = List::new(actions)
+            .block(action_block)
+            .highlight_symbol(" > ")
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let mut action_state = ListState::default();
+        if actions_info
+            .get(selected_index)
+            .map(|(_, enabled)| *enabled)
+            .unwrap_or(false)
+        {
+            action_state.select(Some(selected_index));
+        }
+        frame.render_stateful_widget(action_list, chunks[0], &mut action_state);
 
         let heading_style = Style::default()
             .fg(Color::Cyan)

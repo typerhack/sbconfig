@@ -2,6 +2,7 @@
 // sbconfig - TUI tool for managing sing-box SSH proxy configurations
 
 mod db;
+mod dns_presets;
 mod error;
 mod singbox;
 mod ssh;

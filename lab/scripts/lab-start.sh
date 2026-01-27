@@ -6,7 +6,25 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "Starting sbconfig lab environment..."
-docker compose up -d --build
+# Check if we need to rebuild (use --build flag to force rebuild)
+if [ "$1" == "--build" ]; then
+    echo "Rebuilding lab image..."
+    docker compose up -d --build
+else
+    # Check if container exists and is using old image without Rust
+    if docker ps -a | grep -q sbconfig-lab; then
+        if ! docker exec sbconfig-lab bash -c 'command -v cargo' &>/dev/null 2>&1; then
+            echo "Rust not found in existing container. Rebuilding..."
+            docker compose down
+            docker compose up -d --build
+        else
+            docker compose up -d
+        fi
+    else
+        # No container exists, build it
+        docker compose up -d --build
+    fi
+fi
 
 echo "Waiting for container to be ready..."
 sleep 3

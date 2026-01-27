@@ -52,6 +52,13 @@ RUN curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc &&
     apt-get install -y sing-box && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Rust (stable channel) - baked into the image
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    echo 'source $HOME/.cargo/env' >> /root/.bashrc
+
+# Add cargo to PATH for this build
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # Create sbconfig directories
 RUN mkdir -p /var/lib/sbconfig /var/log/sbconfig /usr/local/bin
 

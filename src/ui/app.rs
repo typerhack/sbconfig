@@ -4,16 +4,20 @@
 use crate::db::{decrypt, Database, User};
 use crate::error::Result;
 use crate::singbox;
-use crate::singbox::{default_host_key_algorithms, generate_config_json, generate_ssh_uri, RoutingPreset, ServiceStatus};
+use crate::singbox::{
+    default_host_key_algorithms, generate_config_json, generate_ssh_uri, RoutingPreset,
+    ServiceStatus,
+};
+use chrono::Utc;
 use crate::ssh::{self, KeyType};
 use base64::{engine::general_purpose, Engine as _};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use qrcode::types::Color as QrColor;
 use qrcode::QrCode;
 use rand::RngCore;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -92,75 +96,55 @@ struct UserDeleteState {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigPlatform {
-    Ios,
-    Android,
-    Windows,
-    Macos,
-    Linux,
-    Generic,
-}
-
-impl ConfigPlatform {
-    fn all() -> &'static [ConfigPlatform] {
-        &[
-            Self::Ios,
-            Self::Android,
-            Self::Windows,
-            Self::Macos,
-            Self::Linux,
-            Self::Generic,
-        ]
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Ios => "iOS",
-            Self::Android => "Android",
-            Self::Windows => "Windows",
-            Self::Macos => "macOS",
-            Self::Linux => "Linux",
-            Self::Generic => "Generic",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            Self::Ios => "sing-box app from App Store",
-            Self::Android => "sing-box app from Play Store",
-            Self::Windows => "sing-box for Windows",
-            Self::Macos => "sing-box for macOS",
-            Self::Linux => "sing-box CLI",
-            Self::Generic => "Platform-agnostic config",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ConfigState {
-    platform_index: usize,
     user_id: Option<i64>,
     output_json: Option<String>,
     output_uri: Option<String>,
-    output_qr: Option<String>,
+    output_qr_path: Option<String>,
     error: Option<String>,
     scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigSettingsFocus {
+enum ClientConfigFocus {
     RoutingPreset,
-    DnsServers,
-    IranAdblock,
+    DnsPresets,
+    CustomDns,
+    BlockAds,
+    ProxyPort,
 }
 
 #[derive(Debug, Clone)]
-struct ConfigSettingsState {
+struct ClientConfigState {
     routing_preset: RoutingPreset,
-    dns_input: InputField,
-    iran_adblock_enabled: bool,
-    focus: ConfigSettingsFocus,
+    dns_selection: crate::dns_presets::DnsSelection,
+    custom_dns_input: InputField,  // Temporary UI field for input
+    block_ads: bool,
+    proxy_port_input: InputField,
+    focus: ClientConfigFocus,
+    dns_scroll: usize,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerConfigFocus {
+    RoutingPreset,
+    DnsPresets,
+    CustomDns,
+    BlockAds,
+    BlockIran,
+}
+
+#[derive(Debug, Clone)]
+struct ServerConfigState {
+    routing_preset: RoutingPreset,
+    dns_selection: crate::dns_presets::DnsSelection,
+    custom_dns_input: InputField,  // Temporary UI field for input
+    block_ads: bool,
+    block_iran: bool,
+    focus: ServerConfigFocus,
+    dns_scroll: usize,
     error: Option<String>,
 }
 
@@ -361,30 +345,48 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-fn render_qr_ascii(data: &str) -> Option<String> {
-    let code = QrCode::new(data.as_bytes()).ok()?;
-    let width = code.width();
-    let colors = code.to_colors();
-    let quiet = 2usize;
-    let mut output = String::new();
-    let render_width = width + quiet * 2;
-    for y in 0..render_width {
-        for x in 0..render_width {
-            let dark = if x < quiet || y < quiet || x >= width + quiet || y >= width + quiet {
-                false
-            } else {
-                let idx = (y - quiet) * width + (x - quiet);
-                colors.get(idx) == Some(&QrColor::Dark)
-            };
-            if dark {
-                output.push_str("##");
-            } else {
-                output.push_str("  ");
-            }
-        }
-        output.push('\n');
+fn wrap_hard(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
     }
-    Some(output)
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut start = 0;
+        while start < bytes.len() {
+            let end = (start + width).min(bytes.len());
+            lines.push(String::from_utf8_lossy(&bytes[start..end]).to_string());
+            start = end;
+        }
+    }
+    lines
+}
+
+fn ensure_config_output_dir() -> Result<PathBuf> {
+    let primary = PathBuf::from("/var/lib/sbconfig/configs");
+    if fs::create_dir_all(&primary).is_ok() {
+        return Ok(primary);
+    }
+    let fallback = PathBuf::from("/tmp/sbconfig/configs");
+    fs::create_dir_all(&fallback)?;
+    Ok(fallback)
+}
+
+fn write_qr_png(data: &str, output_path: &PathBuf) -> Result<()> {
+    let code = QrCode::new(data.as_bytes())
+        .map_err(|_| crate::error::AppError::Config("QR generation failed".to_string()))?;
+    let image = code
+        .render::<image::Luma<u8>>()
+        .min_dimensions(512, 512)
+        .build();
+    image
+        .save(output_path)
+        .map_err(|err| crate::error::AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, err)))?;
+    Ok(())
 }
 
 /// Menu items on the dashboard
@@ -444,10 +446,10 @@ pub enum Screen {
     UserDelete,
     UserManage,
     ConfigsMenu,
-    ConfigSettings,
+    ClientConfigSettings,
+    ServerConfigSettings,
     ConfigUsers,
     ConfigHelp,
-    ConfigPlatform,
     ConfigOutput,
     Settings,
     Logs,
@@ -470,7 +472,8 @@ pub struct App {
     user_delete_state: UserDeleteState,
     user_manage_state: UserManageState,
     config_state: ConfigState,
-    config_settings_state: ConfigSettingsState,
+    client_config_state: ClientConfigState,
+    server_config_state: ServerConfigState,
     settings_edit_state: SettingsEditState,
     settings_modal: SettingsModal,
     settings_modal_error: Option<String>,
@@ -561,19 +564,31 @@ impl App {
                 error: None,
             },
             config_state: ConfigState {
-                platform_index: 0,
                 user_id: None,
                 output_json: None,
                 output_uri: None,
-                output_qr: None,
+                output_qr_path: None,
                 error: None,
                 scroll: 0,
             },
-            config_settings_state: ConfigSettingsState {
+            client_config_state: ClientConfigState {
                 routing_preset: RoutingPreset::Default,
-                dns_input: InputField::new("8.8.8.8,1.1.1.1"),
-                iran_adblock_enabled: true,
-                focus: ConfigSettingsFocus::RoutingPreset,
+                dns_selection: crate::dns_presets::DnsSelection::default(),
+                custom_dns_input: InputField::new(""),
+                block_ads: true,
+                proxy_port_input: InputField::new("10808"),
+                focus: ClientConfigFocus::RoutingPreset,
+                dns_scroll: 0,
+                error: None,
+            },
+            server_config_state: ServerConfigState {
+                routing_preset: RoutingPreset::Default,
+                dns_selection: crate::dns_presets::DnsSelection::default(),
+                custom_dns_input: InputField::new(""),
+                block_ads: false,
+                block_iran: false,
+                focus: ServerConfigFocus::RoutingPreset,
+                dns_scroll: 0,
                 error: None,
             },
             settings_edit_state: SettingsEditState {
@@ -638,16 +653,16 @@ impl App {
             Screen::UserDelete => format!(" sbconfig v{} > Delete User ", Self::app_version()),
             Screen::UserManage => format!(" sbconfig v{} > Manage User ", Self::app_version()),
             Screen::ConfigsMenu => format!(" sbconfig v{} > Configs ", Self::app_version()),
-            Screen::ConfigSettings => {
-                format!(" sbconfig v{} > Config Settings ", Self::app_version())
+            Screen::ClientConfigSettings => {
+                format!(" sbconfig v{} > Client Config Settings ", Self::app_version())
+            }
+            Screen::ServerConfigSettings => {
+                format!(" sbconfig v{} > Server Config Settings ", Self::app_version())
             }
             Screen::ConfigUsers => {
                 format!(" sbconfig v{} > Generate Configs ", Self::app_version())
             }
             Screen::ConfigHelp => format!(" sbconfig v{} > Config Help ", Self::app_version()),
-            Screen::ConfigPlatform => {
-                format!(" sbconfig v{} > Select Platform ", Self::app_version())
-            }
             Screen::ConfigOutput => format!(" sbconfig v{} > Config Output ", Self::app_version()),
             Screen::Settings => format!(" sbconfig v{} > Settings ", Self::app_version()),
             Screen::Logs => format!(" sbconfig v{} > Logs ", Self::app_version()),
@@ -678,10 +693,10 @@ impl App {
                 self.draw_user_manage(frame, chunks[1]);
             }
             Screen::ConfigsMenu => self.draw_configs_menu(frame, chunks[1]),
-            Screen::ConfigSettings => self.draw_config_settings(frame, chunks[1]),
+            Screen::ClientConfigSettings => self.draw_client_config_settings(frame, chunks[1]),
+            Screen::ServerConfigSettings => self.draw_server_config_settings(frame, chunks[1]),
             Screen::ConfigUsers => self.draw_config_users(frame, chunks[1]),
             Screen::ConfigHelp => self.draw_config_help(frame, chunks[1]),
-            Screen::ConfigPlatform => self.draw_config_platform(frame, chunks[1]),
             Screen::ConfigOutput => self.draw_config_output(frame, chunks[1]),
             Screen::Settings => self.draw_settings(frame, chunks[1]),
             Screen::Logs => self.draw_logs(frame, chunks[1]),
@@ -708,14 +723,13 @@ impl App {
                 " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Save  [Esc] Close  [q] Quit "
             }
             Screen::ConfigsMenu => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
-            Screen::ConfigSettings => {
-                " [Tab] Next  [Shift+Tab] Prev  [Up/Down] Select  [Enter] Toggle  [Ctrl+S] Save  [Esc] Back  [q] Quit "
+            Screen::ClientConfigSettings | Screen::ServerConfigSettings => {
+                " [Tab] Next  [Shift+Tab] Prev  [Up/Down] Select  [Space] Toggle  [Ctrl+S] Save  [Esc] Back  [q] Quit "
             }
             Screen::ConfigUsers => {
                 " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit "
             }
             Screen::ConfigHelp => " [Esc] Back  [q] Quit ",
-            Screen::ConfigPlatform => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
             Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back  [q] Quit ",
             Screen::Settings => " [Up/Down] Navigate  [Enter] Edit  [Esc] Back  [q] Quit ",
             _ => " [Esc] Back  [b] Back  [q] Quit ",
@@ -1469,67 +1483,58 @@ impl App {
         frame.render_widget(paragraph, inner);
     }
 
-    fn draw_config_platform(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(2)])
-            .split(area);
-
-        let items: Vec<ListItem> = ConfigPlatform::all()
-            .iter()
-            .enumerate()
-            .map(|(index, platform)| {
-                let prefix = if index == self.config_state.platform_index {
-                    " > "
-                } else {
-                    "   "
-                };
-                ListItem::new(format!(
-                    "{}{} - {}",
-                    prefix,
-                    platform.label(),
-                    platform.description()
-                ))
-            })
-            .collect();
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Select Platform ");
-        let list = List::new(items).block(block);
-        frame.render_widget(list, chunks[0]);
-
-        if let Some(error) = &self.config_state.error {
-            let err_block = Block::default().borders(Borders::ALL).title(" Error ");
-            let paragraph = Paragraph::new(error.clone())
-                .style(Style::default().fg(Color::Red))
-                .block(err_block);
-            frame.render_widget(paragraph, chunks[1]);
-        }
-    }
-
     fn draw_config_output(&self, frame: &mut Frame, area: Rect) {
-        let mut output = String::new();
-        if let Some(uri) = &self.config_state.output_uri {
-            output.push_str("URI\n");
-            output.push_str(uri);
-            output.push_str("\n\n");
-        }
-        if let Some(qr) = &self.config_state.output_qr {
-            output.push_str("QR Code\n");
-            output.push_str(qr);
-            output.push('\n');
-        }
-        if let Some(json) = &self.config_state.output_json {
-            output.push_str("Config JSON\n");
-            output.push_str(json);
-        } else {
-            output.push_str("No config generated yet.");
-        }
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Config Output ");
-        let paragraph = Paragraph::new(output)
+        let inner = block.inner(area);
+        let wrap_width = inner.width.saturating_sub(1) as usize;
+        let mut lines: Vec<Line> = Vec::new();
+
+        if let Some(error) = &self.config_state.error {
+            lines.push(Line::from(Span::styled(
+                error,
+                Style::default().fg(Color::Red),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        if let Some(uri) = &self.config_state.output_uri {
+            lines.push(Line::from(Span::styled(
+                "URI (wrapped for display)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for line in wrap_hard(uri, wrap_width) {
+                lines.push(Line::from(line));
+            }
+            lines.push(Line::from(""));
+        }
+
+        if let Some(path) = &self.config_state.output_qr_path {
+            lines.push(Line::from(Span::styled(
+                "QR Image (PNG)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(path.as_str()));
+            lines.push(Line::from(
+                "Open this file on your phone or transfer it to scan.",
+            ));
+            lines.push(Line::from(""));
+        }
+
+        if let Some(json) = &self.config_state.output_json {
+            lines.push(Line::from(Span::styled(
+                "Config JSON (wrapped for display)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for line in wrap_hard(json, wrap_width) {
+                lines.push(Line::from(line));
+            }
+        } else if lines.is_empty() {
+            lines.push(Line::from("No config generated yet."));
+        }
+
+        let paragraph = Paragraph::new(lines)
             .block(block)
             .scroll((self.config_state.scroll as u16, 0));
         frame.render_widget(paragraph, area);
@@ -1679,7 +1684,8 @@ impl App {
 
     fn draw_configs_menu(&self, frame: &mut Frame, area: Rect) {
         let items = vec![
-            ListItem::new(" Config Settings"),
+            ListItem::new(" Client Config Settings"),
+            ListItem::new(" Server Config Settings"),
             ListItem::new(" Generate Configs"),
             ListItem::new(" Help / How to Use"),
         ];
@@ -1693,166 +1699,212 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             );
         let mut state = ListState::default();
-        state.select(Some(self.config_menu_index.min(2)));
+        state.select(Some(self.config_menu_index.min(3)));
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn draw_config_settings(&self, frame: &mut Frame, area: Rect) {
+    fn draw_client_config_settings(&self, frame: &mut Frame, area: Rect) {
+        use crate::dns_presets::DnsPreset;
+
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
             .split(area);
 
-        let title = Span::styled(
-            " Config Settings ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        );
-        let block = Block::default().borders(Borders::ALL).title(title);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " Client Configuration ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
         let inner = block.inner(chunks[0]);
         frame.render_widget(block, chunks[0]);
-        let routing_focused = self.config_settings_state.focus == ConfigSettingsFocus::RoutingPreset;
-        let heading_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
+
+        let heading_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
         let mut cursor_y = inner.y;
+
+        // Routing Preset Section
+        let routing_focused = self.client_config_state.focus == ClientConfigFocus::RoutingPreset;
         frame.render_widget(
             Paragraph::new(Span::styled(" Routing Preset", heading_style)),
-            Rect {
-                x: inner.x,
-                y: cursor_y,
-                width: inner.width,
-                height: 1,
-            },
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
         );
-        cursor_y = cursor_y.saturating_add(1);
+        cursor_y += 1;
 
         let routing_items = vec![
-            (
-                RoutingPreset::Default,
-                "default",
-            ),
-            (
-                RoutingPreset::IranDirect,
-                "iran_direct (direct Iran domains)",
-            ),
-            (
-                RoutingPreset::IranBlock,
-                "iran_block (block Iran domains)",
-            ),
+            (RoutingPreset::Default, "All traffic proxied", "[DEFAULT]"),
+            (RoutingPreset::IranDirect, "Iranian sites direct, ads blocked", "[IRAN]"),
+            (RoutingPreset::IranBlock, "Block all Iranian traffic", ""),
+            (RoutingPreset::ChinaDirect, "Chinese sites direct", "[CHINA]"),
         ];
-        let routing_list_items: Vec<ListItem> = routing_items
-            .iter()
-            .map(|(preset, label)| {
-                let mark = if *preset == self.config_settings_state.routing_preset {
-                    "*"
-                } else {
-                    " "
-                };
-                ListItem::new(format!(" [{}] {}", mark, label))
-            })
-            .collect();
-        let routing_block = Block::default().borders(Borders::NONE);
-        let routing_list = List::new(routing_list_items)
-            .block(routing_block)
-            .highlight_symbol(if routing_focused { " > " } else { "   " })
-            .highlight_style(if routing_focused {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            });
-        let mut routing_state = ListState::default();
-        let routing_index = routing_items
-            .iter()
-            .position(|(preset, _)| *preset == self.config_settings_state.routing_preset)
-            .unwrap_or(0);
-        routing_state.select(Some(routing_index));
-        let routing_area = Rect {
-            x: inner.x,
-            y: cursor_y,
-            width: inner.width,
-            height: routing_items.len() as u16,
-        };
-        frame.render_stateful_widget(routing_list, routing_area, &mut routing_state);
-        cursor_y = routing_area.y + routing_area.height + 1;
-        let dns_focused = self.config_settings_state.focus == ConfigSettingsFocus::DnsServers;
-        frame.render_widget(
-            Paragraph::new(Span::styled(" DNS Servers (comma-separated)", heading_style)),
-            Rect {
-                x: inner.x,
-                y: cursor_y,
-                width: inner.width,
-                height: 1,
-            },
-        );
-        let dns_line = format!("     {}", self.config_settings_state.dns_input.value);
-        let dns_style = if dns_focused {
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        frame.render_widget(
-            Paragraph::new(dns_line).style(dns_style),
-            Rect {
-                x: inner.x,
-                y: cursor_y + 1,
-                width: inner.width,
-                height: 1,
-            },
-        );
-        cursor_y = cursor_y + 3;
 
-        let ads_focused = self.config_settings_state.focus == ConfigSettingsFocus::IranAdblock;
+        for (preset, desc, badge) in &routing_items {
+            let is_selected = *preset == self.client_config_state.routing_preset;
+            let radio = if is_selected { "(•)" } else { "( )" };
+            let line = if badge.is_empty() {
+                format!("   {} {} - {}", radio, preset.as_str(), desc)
+            } else {
+                format!("   {} {} - {} {}", radio, preset.as_str(), desc, badge)
+            };
+
+            let style = if routing_focused && is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            frame.render_widget(
+                Paragraph::new(line).style(style),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+        cursor_y += 1;
+
+        // DNS Servers Section
+        let dns_focused = self.client_config_state.focus == ClientConfigFocus::DnsPresets;
         frame.render_widget(
-            Paragraph::new(Span::styled(" Iran Ads Blocking (geosite-ads)", heading_style)),
-            Rect {
-                x: inner.x,
-                y: cursor_y,
-                width: inner.width,
-                height: 1,
-            },
+            Paragraph::new(Span::styled(" DNS Servers (select one or more)", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
         );
-        let ads_line = format!(
-            " [{}] {}",
-            if self.config_settings_state.iran_adblock_enabled {
-                "*"
+        cursor_y += 1;
+
+        let all_presets = DnsPreset::all();
+        // Calculate visible window to always show 5 items (or all if < 5)
+        // Keep the selected item visible and centered when possible
+        let visible_start = if all_presets.len() <= 5 {
+            0
+        } else {
+            self.client_config_state.dns_scroll
+                .saturating_sub(2)
+                .min(all_presets.len().saturating_sub(5))
+        };
+        let visible_end = (visible_start + 5).min(all_presets.len());
+
+        for (i, preset) in all_presets.iter().enumerate().skip(visible_start).take(5) {
+            let is_selected = self.client_config_state.dns_selection.is_selected(*preset);
+            let checkbox = if is_selected { "[✓]" } else { "[ ]" };
+            let default_badge = if preset.is_default() { " [DEFAULT]" } else { "" };
+            let line = format!("   {} {} - {}{}", checkbox, preset.label(), preset.description(), default_badge);
+
+            let style = if dns_focused && i == self.client_config_state.dns_scroll {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default().fg(Color::Green)
             } else {
-                " "
-            },
-            if self.config_settings_state.iran_adblock_enabled {
-                "Enabled"
+                Style::default()
+            };
+
+            frame.render_widget(
+                Paragraph::new(line).style(style),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+
+        if all_presets.len() > 5 {
+            frame.render_widget(
+                Paragraph::new(format!("   (showing {}-{} of {})", visible_start + 1, visible_end, all_presets.len()))
+                    .style(Style::default().fg(Color::DarkGray)),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+        cursor_y += 1;
+
+        // Custom DNS Input
+        let custom_dns_focused = self.client_config_state.focus == ClientConfigFocus::CustomDns;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Custom DNS (comma-separated)", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+
+        // Show input with blinking cursor when focused, placeholder when empty
+        let input_value = &self.client_config_state.custom_dns_input.value;
+        let input_text = if custom_dns_focused {
+            let cursor = if self.cursor_visible { "█" } else { "" };
+            if input_value.is_empty() {
+                format!("     {}", cursor)
             } else {
-                "Disabled"
+                format!("     {}{}", input_value, cursor)
             }
+        } else if input_value.is_empty() {
+            "     (e.g., 8.8.8.8, 1.1.1.1)".to_string()
+        } else {
+            format!("     {}", input_value)
+        };
+
+        let custom_style = if custom_dns_focused {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if input_value.is_empty() {
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        frame.render_widget(
+            Paragraph::new(input_text).style(custom_style),
+            Rect { x: inner.x, y: cursor_y + 1, width: inner.width, height: 1 },
         );
+        cursor_y += 3;
+
+        // Block Ads Toggle
+        let ads_focused = self.client_config_state.focus == ClientConfigFocus::BlockAds;
+        let ads_checkbox = if self.client_config_state.block_ads { "[✓]" } else { "[ ]" };
+        let ads_line = format!("   {} Block Iranian Ads [DEFAULT]", ads_checkbox);
         let ads_style = if ads_focused {
             Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if self.client_config_state.block_ads {
+            Style::default().fg(Color::Green)
         } else {
             Style::default()
         };
         frame.render_widget(
-            Paragraph::new(ads_line).style(ads_style),
-            Rect {
-                x: inner.x,
-                y: cursor_y + 1,
-                width: inner.width,
-                height: 1,
-            },
+            Paragraph::new(Span::styled(" Ad Blocking", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
         );
-        cursor_y = cursor_y + 3;
+        frame.render_widget(
+            Paragraph::new(ads_line).style(ads_style),
+            Rect { x: inner.x, y: cursor_y + 1, width: inner.width, height: 1 },
+        );
+        cursor_y += 3;
 
+        // Proxy Port Input
+        let port_focused = self.client_config_state.focus == ClientConfigFocus::ProxyPort;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Local Proxy Port", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+
+        // Show input with blinking cursor when focused
+        let port_text = if port_focused {
+            let cursor = if self.cursor_visible { "█" } else { "" };
+            format!("     {}{} [DEFAULT: 10808]", self.client_config_state.proxy_port_input.value, cursor)
+        } else {
+            format!("     {} [DEFAULT: 10808]", self.client_config_state.proxy_port_input.value)
+        };
+
+        let port_style = if port_focused {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        frame.render_widget(
+            Paragraph::new(port_text).style(port_style),
+            Rect { x: inner.x, y: cursor_y + 1, width: inner.width, height: 1 },
+        );
+        cursor_y += 3;
+
+        // Footer
         let mut footer_lines = vec![
-            Line::from(" Press Tab/Shift+Tab to move between sections."),
-            Line::from(" Press Ctrl+S to save."),
+            Line::from(" [Tab] Next section  [Space] Toggle  [Ctrl+S] Save"),
         ];
-        if let Some(error) = &self.config_settings_state.error {
+        if let Some(error) = &self.client_config_state.error {
             footer_lines.push(Line::from(""));
-            footer_lines.push(Line::from(Span::styled(
-                error,
-                Style::default().fg(Color::Red),
-            )));
+            footer_lines.push(Line::from(Span::styled(error, Style::default().fg(Color::Red))));
         }
         frame.render_widget(
             Paragraph::new(footer_lines),
@@ -1864,30 +1916,257 @@ impl App {
             },
         );
 
+        // Info Panel
         let info_block = Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(
-                " Info (1/3) ",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ));
+            .title(Span::styled(" Info ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
         let info_inner = info_block.inner(chunks[1]);
         frame.render_widget(info_block, chunks[1]);
+
         let mut info_lines = vec![Line::from(" Messages")];
         if let Some(message) = &self.status_message {
             info_lines.push(Line::from(""));
-            info_lines.push(Line::from(Span::styled(
-                message,
-                Style::default().fg(Color::Green),
-            )));
+            info_lines.push(Line::from(Span::styled(message, Style::default().fg(Color::Green))));
         } else {
             info_lines.push(Line::from(""));
-            info_lines.push(Line::from(" No messages yet."));
+            info_lines.push(Line::from(" Configure client"));
+            info_lines.push(Line::from(" settings for user"));
+            info_lines.push(Line::from(" devices."));
         }
-        let info_paragraph = Paragraph::new(info_lines);
-        frame.render_widget(info_paragraph, info_inner);
+        frame.render_widget(Paragraph::new(info_lines), info_inner);
+    }
+
+    fn draw_server_config_settings(&self, frame: &mut Frame, area: Rect) {
+        use crate::dns_presets::DnsPreset;
+
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " Server Configuration ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(chunks[0]);
+        frame.render_widget(block, chunks[0]);
+
+        let heading_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let mut cursor_y = inner.y;
+
+        // Routing Preset Section
+        let routing_focused = self.server_config_state.focus == ServerConfigFocus::RoutingPreset;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Server Routing Preset", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 1;
+
+        let routing_items = vec![
+            (RoutingPreset::Default, "Pass through all traffic", "[DEFAULT]"),
+            (RoutingPreset::IranBlock, "Block Iranian government sites", "[RECOMMENDED]"),
+        ];
+
+        for (preset, desc, badge) in &routing_items {
+            let is_selected = *preset == self.server_config_state.routing_preset;
+            let radio = if is_selected { "(•)" } else { "( )" };
+            let line = if badge.is_empty() {
+                format!("   {} {} - {}", radio, preset.as_str(), desc)
+            } else {
+                format!("   {} {} - {} {}", radio, preset.as_str(), desc, badge)
+            };
+
+            let style = if routing_focused && is_selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            frame.render_widget(
+                Paragraph::new(line).style(style),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+        cursor_y += 1;
+
+        // DNS Servers Section
+        let dns_focused = self.server_config_state.focus == ServerConfigFocus::DnsPresets;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Server DNS Servers", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 1;
+
+        let all_presets = DnsPreset::all();
+        // Calculate visible window to always show 5 items (or all if < 5)
+        // Keep the selected item visible and centered when possible
+        let visible_start = if all_presets.len() <= 5 {
+            0
+        } else {
+            self.server_config_state.dns_scroll
+                .saturating_sub(2)
+                .min(all_presets.len().saturating_sub(5))
+        };
+        let visible_end = (visible_start + 5).min(all_presets.len());
+
+        for (i, preset) in all_presets.iter().enumerate().skip(visible_start).take(5) {
+            let is_selected = self.server_config_state.dns_selection.is_selected(*preset);
+            let checkbox = if is_selected { "[✓]" } else { "[ ]" };
+            let default_badge = if preset.is_default() { " [DEFAULT]" } else { "" };
+            let line = format!("   {} {} - {}{}", checkbox, preset.label(), preset.description(), default_badge);
+
+            let style = if dns_focused && i == self.server_config_state.dns_scroll {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
+            frame.render_widget(
+                Paragraph::new(line).style(style),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+
+        if all_presets.len() > 5 {
+            frame.render_widget(
+                Paragraph::new(format!("   (showing {}-{} of {})", visible_start + 1, visible_end, all_presets.len()))
+                    .style(Style::default().fg(Color::DarkGray)),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        }
+        cursor_y += 1;
+
+        // Custom DNS Input
+        let custom_dns_focused = self.server_config_state.focus == ServerConfigFocus::CustomDns;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Custom DNS (comma-separated)", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+
+        // Show input with blinking cursor when focused, placeholder when empty
+        let input_value = &self.server_config_state.custom_dns_input.value;
+        let input_text = if custom_dns_focused {
+            let cursor = if self.cursor_visible { "█" } else { "" };
+            if input_value.is_empty() {
+                format!("     {}", cursor)
+            } else {
+                format!("     {}{}", input_value, cursor)
+            }
+        } else if input_value.is_empty() {
+            "     (e.g., 8.8.8.8, 1.1.1.1)".to_string()
+        } else {
+            format!("     {}", input_value)
+        };
+
+        let custom_style = if custom_dns_focused {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if input_value.is_empty() {
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        frame.render_widget(
+            Paragraph::new(input_text).style(custom_style),
+            Rect { x: inner.x, y: cursor_y + 1, width: inner.width, height: 1 },
+        );
+        cursor_y += 3;
+
+        // Block Ads Toggle
+        let ads_focused = self.server_config_state.focus == ServerConfigFocus::BlockAds;
+        let ads_checkbox = if self.server_config_state.block_ads { "[✓]" } else { "[ ]" };
+        let ads_line = format!("   {} Block Ads/Tracking", ads_checkbox);
+        let ads_style = if ads_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if self.server_config_state.block_ads {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Server-Side Blocking", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        frame.render_widget(
+            Paragraph::new(ads_line).style(ads_style),
+            Rect { x: inner.x, y: cursor_y + 1, width: inner.width, height: 1 },
+        );
+        cursor_y += 2;
+
+        // Block Iran Toggle
+        let iran_focused = self.server_config_state.focus == ServerConfigFocus::BlockIran;
+        let iran_checkbox = if self.server_config_state.block_iran { "[✓]" } else { "[ ]" };
+        let iran_line = format!("   {} Block Iranian Government Sites", iran_checkbox);
+        let iran_style = if iran_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if self.server_config_state.block_iran {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(iran_line).style(iran_style),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 3;
+
+        // Footer
+        let mut footer_lines = vec![
+            Line::from(" [Tab] Next section  [Space] Toggle  [Ctrl+S] Save"),
+        ];
+        if let Some(error) = &self.server_config_state.error {
+            footer_lines.push(Line::from(""));
+            footer_lines.push(Line::from(Span::styled(error, Style::default().fg(Color::Red))));
+        }
+        frame.render_widget(
+            Paragraph::new(footer_lines),
+            Rect {
+                x: inner.x,
+                y: cursor_y,
+                width: inner.width,
+                height: inner.height.saturating_sub(cursor_y - inner.y),
+            },
+        );
+
+        // Info Panel
+        let info_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" Info ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        let info_inner = info_block.inner(chunks[1]);
+        frame.render_widget(info_block, chunks[1]);
+
+        let mut info_lines = vec![Line::from(" Messages")];
+        if let Some(message) = &self.status_message {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(Span::styled(message, Style::default().fg(Color::Green))));
+        } else {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(" Configure VPS"));
+            info_lines.push(Line::from(" server-side"));
+            info_lines.push(Line::from(" policies."));
+        }
+        frame.render_widget(Paragraph::new(info_lines), info_inner);
     }
 
     fn draw_config_users(&self, frame: &mut Frame, area: Rect) {
+        let (list_area, error_area) = if self.config_state.error.is_some() {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (area, None)
+        };
         let users = self.db.list_users().unwrap_or_default();
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1895,7 +2174,7 @@ impl App {
         if users.is_empty() {
             let paragraph = Paragraph::new(" No users available. Create a user first.")
                 .block(block);
-            frame.render_widget(paragraph, area);
+            frame.render_widget(paragraph, list_area);
             return;
         }
 
@@ -1917,7 +2196,15 @@ impl App {
             );
         let mut state = ListState::default();
         state.select(Some(self.config_user_index.min(users.len().saturating_sub(1))));
-        frame.render_stateful_widget(list, area, &mut state);
+        frame.render_stateful_widget(list, list_area, &mut state);
+
+        if let (Some(error), Some(area)) = (&self.config_state.error, error_area) {
+            let err_block = Block::default().borders(Borders::ALL).title(" Error ");
+            let paragraph = Paragraph::new(error.clone())
+                .style(Style::default().fg(Color::Red))
+                .block(err_block);
+            frame.render_widget(paragraph, area);
+        }
     }
 
     fn draw_config_help(&self, frame: &mut Frame, area: Rect) {
@@ -1937,7 +2224,7 @@ impl App {
                 " How to import",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
-            Line::from("  - Mobile: scan the QR code"),
+            Line::from("  - Mobile: scan the QR image file"),
             Line::from("  - Desktop: open the URI or save config JSON"),
             Line::from("  - CLI: sing-box run -c config.json"),
         ];
@@ -2231,7 +2518,7 @@ impl App {
             self.cursor_visible = !self.cursor_visible;
             self.last_cursor_toggle = Instant::now();
         }
-        if self.screen == Screen::ConfigSettings {
+        if matches!(self.screen, Screen::ClientConfigSettings | Screen::ServerConfigSettings) {
             if let Some(at) = self.status_message_at {
                 if at.elapsed() >= Duration::from_secs(4) {
                     self.status_message = None;
@@ -2246,17 +2533,32 @@ impl App {
                         self.running = false;
                         return Ok(());
                     }
-                    if self.screen == Screen::ConfigSettings
+                    if self.screen == Screen::ClientConfigSettings
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
                     {
-                        if let Err(err) = self.save_config_settings() {
-                            self.config_settings_state.error = Some(err.to_string());
+                        if let Err(err) = self.save_client_config_settings() {
+                            self.client_config_state.error = Some(err.to_string());
                             self.status_message = Some(err.to_string());
                             self.status_message_at = Some(Instant::now());
                         } else {
-                            self.config_settings_state.error = None;
-                            self.status_message = Some("Config settings saved.".to_string());
+                            self.client_config_state.error = None;
+                            self.status_message = Some("Client settings saved.".to_string());
+                            self.status_message_at = Some(Instant::now());
+                        }
+                        return Ok(());
+                    }
+                    if self.screen == Screen::ServerConfigSettings
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+                    {
+                        if let Err(err) = self.save_server_config_settings() {
+                            self.server_config_state.error = Some(err.to_string());
+                            self.status_message = Some(err.to_string());
+                            self.status_message_at = Some(Instant::now());
+                        } else {
+                            self.server_config_state.error = None;
+                            self.status_message = Some("Server settings saved.".to_string());
                             self.status_message_at = Some(Instant::now());
                         }
                         return Ok(());
@@ -2271,10 +2573,10 @@ impl App {
                         Screen::UserDelete => self.handle_user_delete_input(key.code),
                         Screen::UserManage => self.handle_user_manage_input(key.code),
                         Screen::ConfigsMenu => self.handle_configs_menu_input(key.code),
-                        Screen::ConfigSettings => self.handle_config_settings_input(key.code),
+                        Screen::ClientConfigSettings => self.handle_client_config_input(key.code),
+                        Screen::ServerConfigSettings => self.handle_server_config_input(key.code),
                         Screen::ConfigUsers => self.handle_config_users_input(key.code),
                         Screen::ConfigHelp => self.handle_generic_input(key.code),
-                        Screen::ConfigPlatform => self.handle_config_platform_input(key.code),
                         Screen::ConfigOutput => self.handle_config_output_input(key.code),
                         Screen::Settings => self.handle_settings_input(key.code),
                         Screen::Logs => self.handle_logs_input(key.code),
@@ -2584,8 +2886,12 @@ impl App {
                         self.config_state.user_id = Some(user.id);
                         self.config_state.output_json = None;
                         self.config_state.output_uri = None;
-                        self.config_state.output_qr = None;
-                        self.push_screen(Screen::ConfigPlatform);
+                        self.config_state.output_qr_path = None;
+                        self.config_state.error = None;
+                        if let Err(err) = self.generate_config_for_selected_user() {
+                            self.config_state.error = Some(err.to_string());
+                        }
+                        self.push_screen(Screen::ConfigOutput);
                     }
                 }
             }
@@ -2645,13 +2951,13 @@ impl App {
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
             KeyCode::Up => {
                 if self.config_menu_index == 0 {
-                    self.config_menu_index = 2;
+                    self.config_menu_index = 3;
                 } else {
                     self.config_menu_index -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.config_menu_index >= 2 {
+                if self.config_menu_index >= 3 {
                     self.config_menu_index = 0;
                 } else {
                     self.config_menu_index += 1;
@@ -2659,10 +2965,14 @@ impl App {
             }
             KeyCode::Enter => match self.config_menu_index {
                 0 => {
-                    self.load_config_settings();
-                    self.push_screen(Screen::ConfigSettings);
+                    self.load_client_config_settings();
+                    self.push_screen(Screen::ClientConfigSettings);
                 }
                 1 => {
+                    self.load_server_config_settings();
+                    self.push_screen(Screen::ServerConfigSettings);
+                }
+                2 => {
                     self.config_user_index = 0;
                     self.push_screen(Screen::ConfigUsers);
                 }
@@ -2672,74 +2982,172 @@ impl App {
         }
     }
 
-    fn handle_config_settings_input(&mut self, key: KeyCode) {
+    fn handle_client_config_input(&mut self, key: KeyCode) {
+        use crate::dns_presets::DnsPreset;
         match key {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
             KeyCode::Tab => {
-                self.config_settings_state.focus = match self.config_settings_state.focus {
-                    ConfigSettingsFocus::RoutingPreset => ConfigSettingsFocus::DnsServers,
-                    ConfigSettingsFocus::DnsServers => ConfigSettingsFocus::IranAdblock,
-                    ConfigSettingsFocus::IranAdblock => ConfigSettingsFocus::RoutingPreset,
+                self.client_config_state.focus = match self.client_config_state.focus {
+                    ClientConfigFocus::RoutingPreset => ClientConfigFocus::DnsPresets,
+                    ClientConfigFocus::DnsPresets => ClientConfigFocus::CustomDns,
+                    ClientConfigFocus::CustomDns => ClientConfigFocus::BlockAds,
+                    ClientConfigFocus::BlockAds => ClientConfigFocus::ProxyPort,
+                    ClientConfigFocus::ProxyPort => ClientConfigFocus::RoutingPreset,
                 };
             }
             KeyCode::BackTab => {
-                self.config_settings_state.focus = match self.config_settings_state.focus {
-                    ConfigSettingsFocus::RoutingPreset => ConfigSettingsFocus::IranAdblock,
-                    ConfigSettingsFocus::DnsServers => ConfigSettingsFocus::RoutingPreset,
-                    ConfigSettingsFocus::IranAdblock => ConfigSettingsFocus::DnsServers,
+                self.client_config_state.focus = match self.client_config_state.focus {
+                    ClientConfigFocus::RoutingPreset => ClientConfigFocus::ProxyPort,
+                    ClientConfigFocus::DnsPresets => ClientConfigFocus::RoutingPreset,
+                    ClientConfigFocus::CustomDns => ClientConfigFocus::DnsPresets,
+                    ClientConfigFocus::BlockAds => ClientConfigFocus::CustomDns,
+                    ClientConfigFocus::ProxyPort => ClientConfigFocus::BlockAds,
                 };
             }
-            KeyCode::Up => {
-                match self.config_settings_state.focus {
-                    ConfigSettingsFocus::RoutingPreset => {
-                        self.config_settings_state.routing_preset =
-                            Self::previous_routing_preset(self.config_settings_state.routing_preset);
-                    }
-                    ConfigSettingsFocus::DnsServers => {
-                        self.config_settings_state.focus = ConfigSettingsFocus::RoutingPreset;
-                    }
-                    ConfigSettingsFocus::IranAdblock => {
-                        self.config_settings_state.focus = ConfigSettingsFocus::DnsServers;
+            KeyCode::Up => match self.client_config_state.focus {
+                ClientConfigFocus::RoutingPreset => {
+                    self.client_config_state.routing_preset =
+                        Self::previous_routing_preset(self.client_config_state.routing_preset);
+                }
+                ClientConfigFocus::DnsPresets => {
+                    if self.client_config_state.dns_scroll > 0 {
+                        self.client_config_state.dns_scroll -= 1;
                     }
                 }
-            }
-            KeyCode::Down => {
-                match self.config_settings_state.focus {
-                    ConfigSettingsFocus::RoutingPreset => {
-                        self.config_settings_state.routing_preset =
-                            Self::next_routing_preset(self.config_settings_state.routing_preset);
-                    }
-                    ConfigSettingsFocus::DnsServers => {
-                        self.config_settings_state.focus = ConfigSettingsFocus::IranAdblock;
-                    }
-                    ConfigSettingsFocus::IranAdblock => {
-                        self.config_settings_state.focus = ConfigSettingsFocus::RoutingPreset;
+                _ => {}
+            },
+            KeyCode::Down => match self.client_config_state.focus {
+                ClientConfigFocus::RoutingPreset => {
+                    self.client_config_state.routing_preset =
+                        Self::next_routing_preset(self.client_config_state.routing_preset);
+                }
+                ClientConfigFocus::DnsPresets => {
+                    let max_scroll = DnsPreset::all().len().saturating_sub(1);
+                    if self.client_config_state.dns_scroll < max_scroll {
+                        self.client_config_state.dns_scroll += 1;
                     }
                 }
-            }
-            KeyCode::Char(ch) => match self.config_settings_state.focus {
-                ConfigSettingsFocus::DnsServers => {
+                _ => {}
+            },
+            KeyCode::Char(' ') => match self.client_config_state.focus {
+                ClientConfigFocus::DnsPresets => {
+                    let all_presets = DnsPreset::all();
+                    if let Some(preset) = all_presets.get(self.client_config_state.dns_scroll) {
+                        self.client_config_state.dns_selection.toggle(*preset);
+                    }
+                }
+                ClientConfigFocus::BlockAds => {
+                    self.client_config_state.block_ads = !self.client_config_state.block_ads;
+                }
+                _ => {}
+            },
+            KeyCode::Char(ch) => match self.client_config_state.focus {
+                ClientConfigFocus::CustomDns => {
                     if ch.is_ascii_graphic() || ch == ' ' {
-                        self.config_settings_state.dns_input.insert_char(ch);
+                        self.client_config_state.custom_dns_input.insert_char(ch);
+                    }
+                }
+                ClientConfigFocus::ProxyPort => {
+                    if ch.is_ascii_digit() {
+                        self.client_config_state.proxy_port_input.insert_char(ch);
                     }
                 }
                 _ => {}
             },
-            KeyCode::Backspace => match self.config_settings_state.focus {
-                ConfigSettingsFocus::DnsServers => {
-                    self.config_settings_state.dns_input.backspace();
+            KeyCode::Backspace => match self.client_config_state.focus {
+                ClientConfigFocus::CustomDns => {
+                    self.client_config_state.custom_dns_input.backspace();
+                }
+                ClientConfigFocus::ProxyPort => {
+                    self.client_config_state.proxy_port_input.backspace();
                 }
                 _ => {}
             },
-            KeyCode::Enter => match self.config_settings_state.focus {
-                ConfigSettingsFocus::RoutingPreset => {
-                    self.config_settings_state.routing_preset =
-                        Self::next_routing_preset(self.config_settings_state.routing_preset);
+            _ => {}
+        }
+    }
+
+    fn handle_server_config_input(&mut self, key: KeyCode) {
+        use crate::dns_presets::DnsPreset;
+        match key {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Tab => {
+                self.server_config_state.focus = match self.server_config_state.focus {
+                    ServerConfigFocus::RoutingPreset => ServerConfigFocus::DnsPresets,
+                    ServerConfigFocus::DnsPresets => ServerConfigFocus::CustomDns,
+                    ServerConfigFocus::CustomDns => ServerConfigFocus::BlockAds,
+                    ServerConfigFocus::BlockAds => ServerConfigFocus::BlockIran,
+                    ServerConfigFocus::BlockIran => ServerConfigFocus::RoutingPreset,
+                };
+            }
+            KeyCode::BackTab => {
+                self.server_config_state.focus = match self.server_config_state.focus {
+                    ServerConfigFocus::RoutingPreset => ServerConfigFocus::BlockIran,
+                    ServerConfigFocus::DnsPresets => ServerConfigFocus::RoutingPreset,
+                    ServerConfigFocus::CustomDns => ServerConfigFocus::DnsPresets,
+                    ServerConfigFocus::BlockAds => ServerConfigFocus::CustomDns,
+                    ServerConfigFocus::BlockIran => ServerConfigFocus::BlockAds,
+                };
+            }
+            KeyCode::Up => match self.server_config_state.focus {
+                ServerConfigFocus::RoutingPreset => {
+                    self.server_config_state.routing_preset = match self.server_config_state.routing_preset {
+                        RoutingPreset::Default => RoutingPreset::IranBlock,
+                        RoutingPreset::IranBlock => RoutingPreset::Default,
+                        _ => RoutingPreset::Default,
+                    };
                 }
-                ConfigSettingsFocus::IranAdblock => {
-                    self.config_settings_state.iran_adblock_enabled =
-                        !self.config_settings_state.iran_adblock_enabled;
+                ServerConfigFocus::DnsPresets => {
+                    if self.server_config_state.dns_scroll > 0 {
+                        self.server_config_state.dns_scroll -= 1;
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Down => match self.server_config_state.focus {
+                ServerConfigFocus::RoutingPreset => {
+                    self.server_config_state.routing_preset = match self.server_config_state.routing_preset {
+                        RoutingPreset::Default => RoutingPreset::IranBlock,
+                        RoutingPreset::IranBlock => RoutingPreset::Default,
+                        _ => RoutingPreset::Default,
+                    };
+                }
+                ServerConfigFocus::DnsPresets => {
+                    let max_scroll = DnsPreset::all().len().saturating_sub(1);
+                    if self.server_config_state.dns_scroll < max_scroll {
+                        self.server_config_state.dns_scroll += 1;
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Char(' ') => match self.server_config_state.focus {
+                ServerConfigFocus::DnsPresets => {
+                    let all_presets = DnsPreset::all();
+                    if let Some(preset) = all_presets.get(self.server_config_state.dns_scroll) {
+                        self.server_config_state.dns_selection.toggle(*preset);
+                    }
+                }
+                ServerConfigFocus::BlockAds => {
+                    self.server_config_state.block_ads = !self.server_config_state.block_ads;
+                }
+                ServerConfigFocus::BlockIran => {
+                    self.server_config_state.block_iran = !self.server_config_state.block_iran;
+                }
+                _ => {}
+            },
+            KeyCode::Char(ch) => match self.server_config_state.focus {
+                ServerConfigFocus::CustomDns => {
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        self.server_config_state.custom_dns_input.insert_char(ch);
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => match self.server_config_state.focus {
+                ServerConfigFocus::CustomDns => {
+                    self.server_config_state.custom_dns_input.backspace();
                 }
                 _ => {}
             },
@@ -2776,10 +3184,12 @@ impl App {
                     self.config_state.user_id = Some(user.id);
                     self.config_state.output_json = None;
                     self.config_state.output_uri = None;
-                    self.config_state.output_qr = None;
+                    self.config_state.output_qr_path = None;
                     self.config_state.error = None;
-                    self.config_state.platform_index = 0;
-                    self.push_screen(Screen::ConfigPlatform);
+                    if let Err(err) = self.generate_config_for_selected_user() {
+                        self.config_state.error = Some(err.to_string());
+                    }
+                    self.push_screen(Screen::ConfigOutput);
                 }
             }
             _ => {}
@@ -2983,37 +3393,6 @@ impl App {
                         return;
                     }
                     self.pop_screen();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_config_platform_input(&mut self, key: KeyCode) {
-        let max = ConfigPlatform::all().len();
-        match key {
-            KeyCode::Esc => self.pop_screen(),
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.config_state.error = None;
-                if self.config_state.platform_index == 0 {
-                    self.config_state.platform_index = max - 1;
-                } else {
-                    self.config_state.platform_index -= 1;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.config_state.error = None;
-                if self.config_state.platform_index + 1 >= max {
-                    self.config_state.platform_index = 0;
-                } else {
-                    self.config_state.platform_index += 1;
-                }
-            }
-            KeyCode::Enter => {
-                if let Err(err) = self.generate_config_for_selected_user() {
-                    self.config_state.error = Some(err.to_string());
-                } else {
-                    self.push_screen(Screen::ConfigOutput);
                 }
             }
             _ => {}
@@ -3393,47 +3772,158 @@ impl App {
         self.settings_edit_state.error = None;
     }
 
-    fn load_config_settings(&mut self) {
+    fn load_client_config_settings(&mut self) {
+        use crate::dns_presets::DnsSelection;
+
         let routing = self
             .db
-            .get_setting("config_routing_preset")
+            .get_setting("client_routing_preset")
             .ok()
             .flatten()
             .unwrap_or_else(|| "default".to_string());
-        self.config_settings_state.routing_preset = match routing.as_str() {
+        self.client_config_state.routing_preset = match routing.as_str() {
             "iran_direct" => RoutingPreset::IranDirect,
+            "iran_block" => RoutingPreset::IranBlock,
+            "china_direct" => RoutingPreset::ChinaDirect,
+            _ => RoutingPreset::Default,
+        };
+
+        let dns = self
+            .db
+            .get_setting("client_dns_servers")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
+
+        // Parse DNS servers into DnsSelection
+        let dns_servers: Vec<String> = dns.split(',').map(|s| s.trim().to_string()).collect();
+        self.client_config_state.dns_selection = DnsSelection::from_servers(&dns_servers);
+
+        let block_ads = self
+            .db
+            .get_setting("client_block_ads")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "true".to_string());
+        self.client_config_state.block_ads = block_ads == "true";
+
+        let proxy_port = self
+            .db
+            .get_setting("client_proxy_port")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "10808".to_string());
+        self.client_config_state.proxy_port_input.set(&proxy_port);
+
+        self.client_config_state.error = None;
+    }
+
+    fn save_client_config_settings(&mut self) -> Result<()> {
+        // Update custom DNS in selection from input field
+        let custom = self.client_config_state.custom_dns_input.value.trim();
+        self.client_config_state.dns_selection.custom = if !custom.is_empty() {
+            custom.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Collect all DNS servers (presets + custom)
+        let dns_servers = self.client_config_state.dns_selection.to_servers();
+        let dns_joined = dns_servers.join(",");
+
+        // Validate proxy port
+        let port = self.client_config_state.proxy_port_input.value.parse::<u16>()
+            .map_err(|_| crate::error::AppError::Config("Invalid proxy port".to_string()))?;
+        if port == 0 {
+            return Err(crate::error::AppError::Config("Proxy port cannot be 0".to_string()).into());
+        }
+
+        let routing = self.client_config_state.routing_preset.as_str();
+        self.db.set_setting("client_routing_preset", routing)?;
+        self.db.set_setting("client_dns_servers", &dns_joined)?;
+        self.db.set_setting(
+            "client_block_ads",
+            if self.client_config_state.block_ads {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+        self.db.set_setting("client_proxy_port", &port.to_string())?;
+        Ok(())
+    }
+
+    fn load_server_config_settings(&mut self) {
+        use crate::dns_presets::DnsSelection;
+
+        let routing = self
+            .db
+            .get_setting("server_routing_preset")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "default".to_string());
+        self.server_config_state.routing_preset = match routing.as_str() {
             "iran_block" => RoutingPreset::IranBlock,
             _ => RoutingPreset::Default,
         };
 
         let dns = self
             .db
-            .get_setting("config_dns_servers")
+            .get_setting("server_dns_servers")
             .ok()
             .flatten()
             .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
-        self.config_settings_state.dns_input.set(&dns);
 
-        let iran_adblock = self
+        // Parse DNS servers into DnsSelection
+        let dns_servers: Vec<String> = dns.split(',').map(|s| s.trim().to_string()).collect();
+        self.server_config_state.dns_selection = DnsSelection::from_servers(&dns_servers);
+
+        let block_ads = self
             .db
-            .get_setting("config_iran_adblock_enabled")
+            .get_setting("server_block_ads")
             .ok()
             .flatten()
-            .unwrap_or_else(|| "true".to_string());
-        self.config_settings_state.iran_adblock_enabled = iran_adblock == "true";
-        self.config_settings_state.error = None;
+            .unwrap_or_else(|| "false".to_string());
+        self.server_config_state.block_ads = block_ads == "true";
+
+        let block_iran = self
+            .db
+            .get_setting("server_block_iran")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "false".to_string());
+        self.server_config_state.block_iran = block_iran == "true";
+
+        self.server_config_state.error = None;
     }
 
-    fn save_config_settings(&mut self) -> Result<()> {
-        let dns_servers = Self::parse_dns_servers(&self.config_settings_state.dns_input.value)?;
+    fn save_server_config_settings(&mut self) -> Result<()> {
+        // Update custom DNS in selection from input field
+        let custom = self.server_config_state.custom_dns_input.value.trim();
+        self.server_config_state.dns_selection.custom = if !custom.is_empty() {
+            custom.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        } else {
+            Vec::new()
+        };
+
+        // Collect all DNS servers (presets + custom)
+        let dns_servers = self.server_config_state.dns_selection.to_servers();
         let dns_joined = dns_servers.join(",");
 
-        let routing = self.config_settings_state.routing_preset.as_str();
-        self.db.set_setting("config_routing_preset", routing)?;
-        self.db.set_setting("config_dns_servers", &dns_joined)?;
+        let routing = self.server_config_state.routing_preset.as_str();
+        self.db.set_setting("server_routing_preset", routing)?;
+        self.db.set_setting("server_dns_servers", &dns_joined)?;
         self.db.set_setting(
-            "config_iran_adblock_enabled",
-            if self.config_settings_state.iran_adblock_enabled {
+            "server_block_ads",
+            if self.server_config_state.block_ads {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+        self.db.set_setting(
+            "server_block_iran",
+            if self.server_config_state.block_iran {
                 "true"
             } else {
                 "false"
@@ -3888,23 +4378,24 @@ impl App {
 
         let routing_preset = self
             .db
-            .get_setting("config_routing_preset")?
+            .get_setting("client_routing_preset")?
             .unwrap_or_else(|| "default".to_string());
         let routing_preset = match routing_preset.as_str() {
             "iran_direct" => RoutingPreset::IranDirect,
             "iran_block" => RoutingPreset::IranBlock,
+            "china_direct" => RoutingPreset::ChinaDirect,
             _ => RoutingPreset::Default,
         };
 
         let dns_setting = self
             .db
-            .get_setting("config_dns_servers")?
+            .get_setting("client_dns_servers")?
             .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
         let dns_servers = Self::parse_dns_servers(&dns_setting)?;
 
         let iran_adblock_enabled = self
             .db
-            .get_setting("config_iran_adblock_enabled")?
+            .get_setting("client_block_ads")?
             .unwrap_or_else(|| "true".to_string())
             == "true";
 
@@ -3926,7 +4417,18 @@ impl App {
         );
         self.config_state.output_json = Some(json);
         self.config_state.output_uri = Some(uri.clone());
-        self.config_state.output_qr = render_qr_ascii(&uri);
+        self.config_state.output_qr_path = None;
+        self.config_state.error = None;
+
+        let output_dir = ensure_config_output_dir()?;
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("sbconfig_{}_{}.png", user.username, timestamp);
+        let qr_path = output_dir.join(filename);
+        if let Err(err) = write_qr_png(&uri, &qr_path) {
+            self.config_state.error = Some(format!("Failed to write QR image: {}", err));
+        } else {
+            self.config_state.output_qr_path = Some(qr_path.display().to_string());
+        }
         self.config_state.scroll = 0;
         Ok(())
     }

@@ -23,18 +23,8 @@ docker exec sbconfig-lab mkdir -p /build
 docker cp Cargo.toml sbconfig-lab:/build/
 docker cp src sbconfig-lab:/build/
 
-echo "Installing Rust in container (if needed)..."
-docker exec sbconfig-lab bash -c '
-    if ! command -v cargo &> /dev/null; then
-        echo "Installing Rust..."
-        curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source ~/.cargo/env
-    fi
-'
-
 echo "Building sbconfig inside container..."
 docker exec sbconfig-lab bash -c '
-    source ~/.cargo/env 2>/dev/null || true
     cd /build
     cargo build --release
 '

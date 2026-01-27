@@ -4,10 +4,12 @@
 use crate::db::{decrypt, Database, User};
 use crate::error::Result;
 use crate::singbox;
-use crate::singbox::{generate_config_json, RoutingPreset, ServiceStatus};
+use crate::singbox::{default_host_key_algorithms, generate_config_json, generate_ssh_uri, RoutingPreset, ServiceStatus};
 use crate::ssh::{self, KeyType};
 use base64::{engine::general_purpose, Engine as _};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use qrcode::types::Color as QrColor;
+use qrcode::QrCode;
 use rand::RngCore;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -140,8 +142,26 @@ struct ConfigState {
     platform_index: usize,
     user_id: Option<i64>,
     output_json: Option<String>,
+    output_uri: Option<String>,
+    output_qr: Option<String>,
     error: Option<String>,
     scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigSettingsFocus {
+    RoutingPreset,
+    DnsServers,
+    IranAdblock,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigSettingsState {
+    routing_preset: RoutingPreset,
+    dns_input: InputField,
+    iran_adblock_enabled: bool,
+    focus: ConfigSettingsFocus,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +361,32 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
+fn render_qr_ascii(data: &str) -> Option<String> {
+    let code = QrCode::new(data.as_bytes()).ok()?;
+    let width = code.width();
+    let colors = code.to_colors();
+    let quiet = 2usize;
+    let mut output = String::new();
+    let render_width = width + quiet * 2;
+    for y in 0..render_width {
+        for x in 0..render_width {
+            let dark = if x < quiet || y < quiet || x >= width + quiet || y >= width + quiet {
+                false
+            } else {
+                let idx = (y - quiet) * width + (x - quiet);
+                colors.get(idx) == Some(&QrColor::Dark)
+            };
+            if dark {
+                output.push_str("##");
+            } else {
+                output.push_str("  ");
+            }
+        }
+        output.push('\n');
+    }
+    Some(output)
+}
+
 /// Menu items on the dashboard
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
@@ -368,7 +414,7 @@ impl MenuItem {
         match self {
             MenuItem::Singbox => "sing-box Status",
             MenuItem::Users => "Manage Users",
-            MenuItem::Configs => "Generate Configs",
+            MenuItem::Configs => "Configs",
             MenuItem::Settings => "Settings",
             MenuItem::Logs => "View Logs",
             MenuItem::Quit => "Quit",
@@ -379,7 +425,7 @@ impl MenuItem {
         match self {
             MenuItem::Singbox => Some(Screen::SingboxStatus),
             MenuItem::Users => Some(Screen::UsersMenu),
-            MenuItem::Configs => Some(Screen::Configs),
+            MenuItem::Configs => Some(Screen::ConfigsMenu),
             MenuItem::Settings => Some(Screen::Settings),
             MenuItem::Logs => Some(Screen::Logs),
             MenuItem::Quit => None,
@@ -397,7 +443,10 @@ pub enum Screen {
     UserCreate,
     UserDelete,
     UserManage,
-    Configs,
+    ConfigsMenu,
+    ConfigSettings,
+    ConfigUsers,
+    ConfigHelp,
     ConfigPlatform,
     ConfigOutput,
     Settings,
@@ -412,6 +461,8 @@ pub struct App {
     // Dashboard state
     menu_index: usize,
     users_menu_index: usize,
+    config_menu_index: usize,
+    config_user_index: usize,
     // Users screen state
     user_list_index: usize,
     setup_state: SetupState,
@@ -419,6 +470,7 @@ pub struct App {
     user_delete_state: UserDeleteState,
     user_manage_state: UserManageState,
     config_state: ConfigState,
+    config_settings_state: ConfigSettingsState,
     settings_edit_state: SettingsEditState,
     settings_modal: SettingsModal,
     settings_modal_error: Option<String>,
@@ -427,6 +479,7 @@ pub struct App {
     last_cursor_toggle: Instant,
     logs_state: LogsState,
     status_message: Option<String>,
+    status_message_at: Option<Instant>,
     singbox_action_index: usize,
     singbox_message: Option<String>,
     singbox_status_output: Option<String>,
@@ -486,6 +539,8 @@ impl App {
             screen_stack: Vec::new(),
             menu_index: 0,
             users_menu_index: 0,
+            config_menu_index: 0,
+            config_user_index: 0,
             user_list_index: 0,
             setup_state,
             user_create_state: UserCreateState {
@@ -509,8 +564,17 @@ impl App {
                 platform_index: 0,
                 user_id: None,
                 output_json: None,
+                output_uri: None,
+                output_qr: None,
                 error: None,
                 scroll: 0,
+            },
+            config_settings_state: ConfigSettingsState {
+                routing_preset: RoutingPreset::Default,
+                dns_input: InputField::new("8.8.8.8,1.1.1.1"),
+                iran_adblock_enabled: true,
+                focus: ConfigSettingsFocus::RoutingPreset,
+                error: None,
             },
             settings_edit_state: SettingsEditState {
                 server_input: InputField::new(""),
@@ -529,6 +593,7 @@ impl App {
                 scroll: 0,
             },
             status_message: None,
+            status_message_at: None,
             singbox_action_index: 0,
             singbox_message: None,
             singbox_status_output: None,
@@ -572,7 +637,14 @@ impl App {
             Screen::UserCreate => format!(" sbconfig v{} > Create User ", Self::app_version()),
             Screen::UserDelete => format!(" sbconfig v{} > Delete User ", Self::app_version()),
             Screen::UserManage => format!(" sbconfig v{} > Manage User ", Self::app_version()),
-            Screen::Configs => format!(" sbconfig v{} > Config Generation ", Self::app_version()),
+            Screen::ConfigsMenu => format!(" sbconfig v{} > Configs ", Self::app_version()),
+            Screen::ConfigSettings => {
+                format!(" sbconfig v{} > Config Settings ", Self::app_version())
+            }
+            Screen::ConfigUsers => {
+                format!(" sbconfig v{} > Generate Configs ", Self::app_version())
+            }
+            Screen::ConfigHelp => format!(" sbconfig v{} > Config Help ", Self::app_version()),
             Screen::ConfigPlatform => {
                 format!(" sbconfig v{} > Select Platform ", Self::app_version())
             }
@@ -605,7 +677,10 @@ impl App {
                 self.draw_users(frame, chunks[1]);
                 self.draw_user_manage(frame, chunks[1]);
             }
-            Screen::Configs => self.draw_configs(frame, chunks[1]),
+            Screen::ConfigsMenu => self.draw_configs_menu(frame, chunks[1]),
+            Screen::ConfigSettings => self.draw_config_settings(frame, chunks[1]),
+            Screen::ConfigUsers => self.draw_config_users(frame, chunks[1]),
+            Screen::ConfigHelp => self.draw_config_help(frame, chunks[1]),
             Screen::ConfigPlatform => self.draw_config_platform(frame, chunks[1]),
             Screen::ConfigOutput => self.draw_config_output(frame, chunks[1]),
             Screen::Settings => self.draw_settings(frame, chunks[1]),
@@ -632,6 +707,14 @@ impl App {
             Screen::UserManage => {
                 " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Save  [Esc] Close  [q] Quit "
             }
+            Screen::ConfigsMenu => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
+            Screen::ConfigSettings => {
+                " [Tab] Next  [Shift+Tab] Prev  [Up/Down] Select  [Enter] Toggle  [Ctrl+S] Save  [Esc] Back  [q] Quit "
+            }
+            Screen::ConfigUsers => {
+                " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit "
+            }
+            Screen::ConfigHelp => " [Esc] Back  [q] Quit ",
             Screen::ConfigPlatform => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
             Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back  [q] Quit ",
             Screen::Settings => " [Up/Down] Navigate  [Enter] Edit  [Esc] Back  [q] Quit ",
@@ -1387,6 +1470,11 @@ impl App {
     }
 
     fn draw_config_platform(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(2)])
+            .split(area);
+
         let items: Vec<ListItem> = ConfigPlatform::all()
             .iter()
             .enumerate()
@@ -1409,15 +1497,35 @@ impl App {
             .borders(Borders::ALL)
             .title(" Select Platform ");
         let list = List::new(items).block(block);
-        frame.render_widget(list, area);
+        frame.render_widget(list, chunks[0]);
+
+        if let Some(error) = &self.config_state.error {
+            let err_block = Block::default().borders(Borders::ALL).title(" Error ");
+            let paragraph = Paragraph::new(error.clone())
+                .style(Style::default().fg(Color::Red))
+                .block(err_block);
+            frame.render_widget(paragraph, chunks[1]);
+        }
     }
 
     fn draw_config_output(&self, frame: &mut Frame, area: Rect) {
-        let output = self
-            .config_state
-            .output_json
-            .clone()
-            .unwrap_or_else(|| "No config generated yet.".to_string());
+        let mut output = String::new();
+        if let Some(uri) = &self.config_state.output_uri {
+            output.push_str("URI\n");
+            output.push_str(uri);
+            output.push_str("\n\n");
+        }
+        if let Some(qr) = &self.config_state.output_qr {
+            output.push_str("QR Code\n");
+            output.push_str(qr);
+            output.push('\n');
+        }
+        if let Some(json) = &self.config_state.output_json {
+            output.push_str("Config JSON\n");
+            output.push_str(json);
+        } else {
+            output.push_str("No config generated yet.");
+        }
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Config Output ");
@@ -1569,25 +1677,272 @@ impl App {
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn draw_configs(&self, frame: &mut Frame, area: Rect) {
-        let text = vec![
-            Line::from(""),
-            Line::from("  Select a user from the Users screen to generate a configuration."),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Supported platforms:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )),
-            Line::from("    - iOS (Shadowrocket, Stash)"),
-            Line::from("    - Android (sing-box, NekoBox)"),
-            Line::from("    - Windows (sing-box GUI)"),
-            Line::from("    - macOS (sing-box)"),
-            Line::from("    - Linux (sing-box CLI)"),
+    fn draw_configs_menu(&self, frame: &mut Frame, area: Rect) {
+        let items = vec![
+            ListItem::new(" Config Settings"),
+            ListItem::new(" Generate Configs"),
+            ListItem::new(" Help / How to Use"),
         ];
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(" Configs "))
+            .highlight_symbol(" > ")
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let mut state = ListState::default();
+        state.select(Some(self.config_menu_index.min(2)));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn draw_config_settings(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(area);
+
+        let title = Span::styled(
+            " Config Settings ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        );
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let inner = block.inner(chunks[0]);
+        frame.render_widget(block, chunks[0]);
+        let routing_focused = self.config_settings_state.focus == ConfigSettingsFocus::RoutingPreset;
+        let heading_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let mut cursor_y = inner.y;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Routing Preset", heading_style)),
+            Rect {
+                x: inner.x,
+                y: cursor_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+        cursor_y = cursor_y.saturating_add(1);
+
+        let routing_items = vec![
+            (
+                RoutingPreset::Default,
+                "default",
+            ),
+            (
+                RoutingPreset::IranDirect,
+                "iran_direct (direct Iran domains)",
+            ),
+            (
+                RoutingPreset::IranBlock,
+                "iran_block (block Iran domains)",
+            ),
+        ];
+        let routing_list_items: Vec<ListItem> = routing_items
+            .iter()
+            .map(|(preset, label)| {
+                let mark = if *preset == self.config_settings_state.routing_preset {
+                    "*"
+                } else {
+                    " "
+                };
+                ListItem::new(format!(" [{}] {}", mark, label))
+            })
+            .collect();
+        let routing_block = Block::default().borders(Borders::NONE);
+        let routing_list = List::new(routing_list_items)
+            .block(routing_block)
+            .highlight_symbol(if routing_focused { " > " } else { "   " })
+            .highlight_style(if routing_focused {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            });
+        let mut routing_state = ListState::default();
+        let routing_index = routing_items
+            .iter()
+            .position(|(preset, _)| *preset == self.config_settings_state.routing_preset)
+            .unwrap_or(0);
+        routing_state.select(Some(routing_index));
+        let routing_area = Rect {
+            x: inner.x,
+            y: cursor_y,
+            width: inner.width,
+            height: routing_items.len() as u16,
+        };
+        frame.render_stateful_widget(routing_list, routing_area, &mut routing_state);
+        cursor_y = routing_area.y + routing_area.height + 1;
+        let dns_focused = self.config_settings_state.focus == ConfigSettingsFocus::DnsServers;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" DNS Servers (comma-separated)", heading_style)),
+            Rect {
+                x: inner.x,
+                y: cursor_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+        let dns_line = format!("     {}", self.config_settings_state.dns_input.value);
+        let dns_style = if dns_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(dns_line).style(dns_style),
+            Rect {
+                x: inner.x,
+                y: cursor_y + 1,
+                width: inner.width,
+                height: 1,
+            },
+        );
+        cursor_y = cursor_y + 3;
+
+        let ads_focused = self.config_settings_state.focus == ConfigSettingsFocus::IranAdblock;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Iran Ads Blocking (geosite-ads)", heading_style)),
+            Rect {
+                x: inner.x,
+                y: cursor_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+        let ads_line = format!(
+            " [{}] {}",
+            if self.config_settings_state.iran_adblock_enabled {
+                "*"
+            } else {
+                " "
+            },
+            if self.config_settings_state.iran_adblock_enabled {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+        let ads_style = if ads_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(ads_line).style(ads_style),
+            Rect {
+                x: inner.x,
+                y: cursor_y + 1,
+                width: inner.width,
+                height: 1,
+            },
+        );
+        cursor_y = cursor_y + 3;
+
+        let mut footer_lines = vec![
+            Line::from(" Press Tab/Shift+Tab to move between sections."),
+            Line::from(" Press Ctrl+S to save."),
+        ];
+        if let Some(error) = &self.config_settings_state.error {
+            footer_lines.push(Line::from(""));
+            footer_lines.push(Line::from(Span::styled(
+                error,
+                Style::default().fg(Color::Red),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(footer_lines),
+            Rect {
+                x: inner.x,
+                y: cursor_y,
+                width: inner.width,
+                height: inner.height.saturating_sub(cursor_y - inner.y),
+            },
+        );
+
+        let info_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " Info (1/3) ",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+        let info_inner = info_block.inner(chunks[1]);
+        frame.render_widget(info_block, chunks[1]);
+        let mut info_lines = vec![Line::from(" Messages")];
+        if let Some(message) = &self.status_message {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(Span::styled(
+                message,
+                Style::default().fg(Color::Green),
+            )));
+        } else {
+            info_lines.push(Line::from(""));
+            info_lines.push(Line::from(" No messages yet."));
+        }
+        let info_paragraph = Paragraph::new(info_lines);
+        frame.render_widget(info_paragraph, info_inner);
+    }
+
+    fn draw_config_users(&self, frame: &mut Frame, area: Rect) {
+        let users = self.db.list_users().unwrap_or_default();
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Config Generation ");
-        let paragraph = Paragraph::new(text).block(block);
+            .title(" Select User ");
+        if users.is_empty() {
+            let paragraph = Paragraph::new(" No users available. Create a user first.")
+                .block(block);
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        let items: Vec<ListItem> = users
+            .iter()
+            .map(|u| {
+                let status = if u.is_active { "Active" } else { "Disabled" };
+                ListItem::new(format!(" {} ({})", u.username, status))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(block)
+            .highlight_symbol(" > ")
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
+        let mut state = ListState::default();
+        state.select(Some(self.config_user_index.min(users.len().saturating_sub(1))));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn draw_config_help(&self, frame: &mut Frame, area: Rect) {
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                " Supported clients",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  - iOS: sing-box (App Store)"),
+            Line::from("  - Android: sing-box, NekoBox"),
+            Line::from("  - Windows: sing-box GUI"),
+            Line::from("  - macOS: sing-box"),
+            Line::from("  - Linux: sing-box CLI"),
+            Line::from(""),
+            Line::from(Span::styled(
+                " How to import",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from("  - Mobile: scan the QR code"),
+            Line::from("  - Desktop: open the URI or save config JSON"),
+            Line::from("  - CLI: sing-box run -c config.json"),
+        ];
+        let block = Block::default().borders(Borders::ALL).title(" Config Help ");
+        let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
     }
 
@@ -1876,11 +2231,34 @@ impl App {
             self.cursor_visible = !self.cursor_visible;
             self.last_cursor_toggle = Instant::now();
         }
+        if self.screen == Screen::ConfigSettings {
+            if let Some(at) = self.status_message_at {
+                if at.elapsed() >= Duration::from_secs(4) {
+                    self.status_message = None;
+                    self.status_message_at = None;
+                }
+            }
+        }
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
                         self.running = false;
+                        return Ok(());
+                    }
+                    if self.screen == Screen::ConfigSettings
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+                    {
+                        if let Err(err) = self.save_config_settings() {
+                            self.config_settings_state.error = Some(err.to_string());
+                            self.status_message = Some(err.to_string());
+                            self.status_message_at = Some(Instant::now());
+                        } else {
+                            self.config_settings_state.error = None;
+                            self.status_message = Some("Config settings saved.".to_string());
+                            self.status_message_at = Some(Instant::now());
+                        }
                         return Ok(());
                     }
                     match self.screen {
@@ -1892,7 +2270,10 @@ impl App {
                         Screen::UserCreate => self.handle_user_create_input(key.code),
                         Screen::UserDelete => self.handle_user_delete_input(key.code),
                         Screen::UserManage => self.handle_user_manage_input(key.code),
-                        Screen::Configs => self.handle_generic_input(key.code),
+                        Screen::ConfigsMenu => self.handle_configs_menu_input(key.code),
+                        Screen::ConfigSettings => self.handle_config_settings_input(key.code),
+                        Screen::ConfigUsers => self.handle_config_users_input(key.code),
+                        Screen::ConfigHelp => self.handle_generic_input(key.code),
                         Screen::ConfigPlatform => self.handle_config_platform_input(key.code),
                         Screen::ConfigOutput => self.handle_config_output_input(key.code),
                         Screen::Settings => self.handle_settings_input(key.code),
@@ -2202,6 +2583,8 @@ impl App {
                     if let Some(user) = users.get(self.user_list_index) {
                         self.config_state.user_id = Some(user.id);
                         self.config_state.output_json = None;
+                        self.config_state.output_uri = None;
+                        self.config_state.output_qr = None;
                         self.push_screen(Screen::ConfigPlatform);
                     }
                 }
@@ -2252,6 +2635,153 @@ impl App {
                     self.push_screen(Screen::Users);
                 }
             },
+            _ => {}
+        }
+    }
+
+    fn handle_configs_menu_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Up => {
+                if self.config_menu_index == 0 {
+                    self.config_menu_index = 2;
+                } else {
+                    self.config_menu_index -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.config_menu_index >= 2 {
+                    self.config_menu_index = 0;
+                } else {
+                    self.config_menu_index += 1;
+                }
+            }
+            KeyCode::Enter => match self.config_menu_index {
+                0 => {
+                    self.load_config_settings();
+                    self.push_screen(Screen::ConfigSettings);
+                }
+                1 => {
+                    self.config_user_index = 0;
+                    self.push_screen(Screen::ConfigUsers);
+                }
+                _ => self.push_screen(Screen::ConfigHelp),
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_config_settings_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Tab => {
+                self.config_settings_state.focus = match self.config_settings_state.focus {
+                    ConfigSettingsFocus::RoutingPreset => ConfigSettingsFocus::DnsServers,
+                    ConfigSettingsFocus::DnsServers => ConfigSettingsFocus::IranAdblock,
+                    ConfigSettingsFocus::IranAdblock => ConfigSettingsFocus::RoutingPreset,
+                };
+            }
+            KeyCode::BackTab => {
+                self.config_settings_state.focus = match self.config_settings_state.focus {
+                    ConfigSettingsFocus::RoutingPreset => ConfigSettingsFocus::IranAdblock,
+                    ConfigSettingsFocus::DnsServers => ConfigSettingsFocus::RoutingPreset,
+                    ConfigSettingsFocus::IranAdblock => ConfigSettingsFocus::DnsServers,
+                };
+            }
+            KeyCode::Up => {
+                match self.config_settings_state.focus {
+                    ConfigSettingsFocus::RoutingPreset => {
+                        self.config_settings_state.routing_preset =
+                            Self::previous_routing_preset(self.config_settings_state.routing_preset);
+                    }
+                    ConfigSettingsFocus::DnsServers => {
+                        self.config_settings_state.focus = ConfigSettingsFocus::RoutingPreset;
+                    }
+                    ConfigSettingsFocus::IranAdblock => {
+                        self.config_settings_state.focus = ConfigSettingsFocus::DnsServers;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                match self.config_settings_state.focus {
+                    ConfigSettingsFocus::RoutingPreset => {
+                        self.config_settings_state.routing_preset =
+                            Self::next_routing_preset(self.config_settings_state.routing_preset);
+                    }
+                    ConfigSettingsFocus::DnsServers => {
+                        self.config_settings_state.focus = ConfigSettingsFocus::IranAdblock;
+                    }
+                    ConfigSettingsFocus::IranAdblock => {
+                        self.config_settings_state.focus = ConfigSettingsFocus::RoutingPreset;
+                    }
+                }
+            }
+            KeyCode::Char(ch) => match self.config_settings_state.focus {
+                ConfigSettingsFocus::DnsServers => {
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        self.config_settings_state.dns_input.insert_char(ch);
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Backspace => match self.config_settings_state.focus {
+                ConfigSettingsFocus::DnsServers => {
+                    self.config_settings_state.dns_input.backspace();
+                }
+                _ => {}
+            },
+            KeyCode::Enter => match self.config_settings_state.focus {
+                ConfigSettingsFocus::RoutingPreset => {
+                    self.config_settings_state.routing_preset =
+                        Self::next_routing_preset(self.config_settings_state.routing_preset);
+                }
+                ConfigSettingsFocus::IranAdblock => {
+                    self.config_settings_state.iran_adblock_enabled =
+                        !self.config_settings_state.iran_adblock_enabled;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn handle_config_users_input(&mut self, key: KeyCode) {
+        let users = self.db.list_users().unwrap_or_default();
+        let user_count = users.len();
+        match key {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Up => {
+                if user_count > 0 {
+                    if self.config_user_index > 0 {
+                        self.config_user_index -= 1;
+                    } else {
+                        self.config_user_index = user_count - 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if user_count > 0 {
+                    if self.config_user_index + 1 < user_count {
+                        self.config_user_index += 1;
+                    } else {
+                        self.config_user_index = 0;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(user) = users.get(self.config_user_index) {
+                    self.config_state.user_id = Some(user.id);
+                    self.config_state.output_json = None;
+                    self.config_state.output_uri = None;
+                    self.config_state.output_qr = None;
+                    self.config_state.error = None;
+                    self.config_state.platform_index = 0;
+                    self.push_screen(Screen::ConfigPlatform);
+                }
+            }
             _ => {}
         }
     }
@@ -2464,6 +2994,7 @@ impl App {
         match key {
             KeyCode::Esc => self.pop_screen(),
             KeyCode::Up | KeyCode::Char('k') => {
+                self.config_state.error = None;
                 if self.config_state.platform_index == 0 {
                     self.config_state.platform_index = max - 1;
                 } else {
@@ -2471,6 +3002,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                self.config_state.error = None;
                 if self.config_state.platform_index + 1 >= max {
                     self.config_state.platform_index = 0;
                 } else {
@@ -2861,6 +3393,88 @@ impl App {
         self.settings_edit_state.error = None;
     }
 
+    fn load_config_settings(&mut self) {
+        let routing = self
+            .db
+            .get_setting("config_routing_preset")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "default".to_string());
+        self.config_settings_state.routing_preset = match routing.as_str() {
+            "iran_direct" => RoutingPreset::IranDirect,
+            "iran_block" => RoutingPreset::IranBlock,
+            _ => RoutingPreset::Default,
+        };
+
+        let dns = self
+            .db
+            .get_setting("config_dns_servers")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
+        self.config_settings_state.dns_input.set(&dns);
+
+        let iran_adblock = self
+            .db
+            .get_setting("config_iran_adblock_enabled")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "true".to_string());
+        self.config_settings_state.iran_adblock_enabled = iran_adblock == "true";
+        self.config_settings_state.error = None;
+    }
+
+    fn save_config_settings(&mut self) -> Result<()> {
+        let dns_servers = Self::parse_dns_servers(&self.config_settings_state.dns_input.value)?;
+        let dns_joined = dns_servers.join(",");
+
+        let routing = self.config_settings_state.routing_preset.as_str();
+        self.db.set_setting("config_routing_preset", routing)?;
+        self.db.set_setting("config_dns_servers", &dns_joined)?;
+        self.db.set_setting(
+            "config_iran_adblock_enabled",
+            if self.config_settings_state.iran_adblock_enabled {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+        Ok(())
+    }
+
+    fn parse_dns_servers(input: &str) -> Result<Vec<String>> {
+        let servers = input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+        if servers.is_empty() {
+            return Err(crate::error::AppError::Config(
+                "At least one DNS server is required".to_string(),
+            ));
+        }
+        Ok(servers)
+    }
+
+    fn next_routing_preset(current: RoutingPreset) -> RoutingPreset {
+        match current {
+            RoutingPreset::Default => RoutingPreset::IranDirect,
+            RoutingPreset::IranDirect => RoutingPreset::IranBlock,
+            RoutingPreset::IranBlock => RoutingPreset::Default,
+            RoutingPreset::ChinaDirect => RoutingPreset::Default,
+        }
+    }
+
+    fn previous_routing_preset(current: RoutingPreset) -> RoutingPreset {
+        match current {
+            RoutingPreset::Default => RoutingPreset::IranBlock,
+            RoutingPreset::IranDirect => RoutingPreset::Default,
+            RoutingPreset::IranBlock => RoutingPreset::IranDirect,
+            RoutingPreset::ChinaDirect => RoutingPreset::Default,
+        }
+    }
+
+
     fn save_setup_settings(&mut self) -> Result<()> {
         let port = self.setup_state.port_input.value.trim();
         let port_num = port
@@ -3247,10 +3861,24 @@ impl App {
 
         let encryption_key = self.get_or_create_encryption_key()?;
         let private_key = decrypt(&user.private_key_encrypted, &encryption_key)?;
-        let server = self
+        let mode = self
             .db
-            .get_setting("server_address")?
-            .unwrap_or_else(|| "localhost".to_string());
+            .get_setting("mode")?
+            .unwrap_or_else(|| "production".to_string());
+        let server = if mode == "development" {
+            "localhost".to_string()
+        } else {
+            let value = self
+                .db
+                .get_setting("server_address")?
+                .unwrap_or_default();
+            if value.trim().is_empty() {
+                return Err(crate::error::AppError::Config(
+                    "Server address is not configured".to_string(),
+                ));
+            }
+            value
+        };
         let port = self
             .db
             .get_setting("ssh_port")?
@@ -3258,14 +3886,47 @@ impl App {
             .parse::<u16>()
             .map_err(|_| crate::error::AppError::Config("Invalid SSH port".to_string()))?;
 
+        let routing_preset = self
+            .db
+            .get_setting("config_routing_preset")?
+            .unwrap_or_else(|| "default".to_string());
+        let routing_preset = match routing_preset.as_str() {
+            "iran_direct" => RoutingPreset::IranDirect,
+            "iran_block" => RoutingPreset::IranBlock,
+            _ => RoutingPreset::Default,
+        };
+
+        let dns_setting = self
+            .db
+            .get_setting("config_dns_servers")?
+            .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
+        let dns_servers = Self::parse_dns_servers(&dns_setting)?;
+
+        let iran_adblock_enabled = self
+            .db
+            .get_setting("config_iran_adblock_enabled")?
+            .unwrap_or_else(|| "true".to_string())
+            == "true";
+
         let json = generate_config_json(
             &server,
             port,
             &user.username,
             &private_key,
-            RoutingPreset::Default,
+            routing_preset,
+            &dns_servers,
+            iran_adblock_enabled,
         )?;
+        let uri = generate_ssh_uri(
+            &server,
+            port,
+            &user.username,
+            &private_key,
+            &default_host_key_algorithms(),
+        );
         self.config_state.output_json = Some(json);
+        self.config_state.output_uri = Some(uri.clone());
+        self.config_state.output_qr = render_qr_ascii(&uri);
         self.config_state.scroll = 0;
         Ok(())
     }

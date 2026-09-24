@@ -102,8 +102,10 @@ struct ConfigState {
     output_json: Option<String>,
     output_uri: Option<String>,
     output_qr_path: Option<String>,
+    output_qr_ascii: Option<String>,
     error: Option<String>,
     scroll: usize,
+    copy_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +135,10 @@ enum ServerConfigFocus {
     DnsPresets,
     CustomDns,
     BlockAds,
-    BlockIran,
+    BlockIranGov,
+    BlockAllIran,
+    CustomBlocklist,
+    ViewServerConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +147,13 @@ struct ServerConfigState {
     dns_selection: crate::dns_presets::DnsSelection,
     custom_dns_input: InputField,  // Temporary UI field for input
     block_ads: bool,
-    block_iran: bool,
+    block_iran_gov: bool,           // Block Iranian government sites only
+    block_all_iran: bool,           // Block all Iranian sites
+    custom_blocklist: Vec<String>,  // List of domains to block
+    blocklist_input: InputField,    // Input for adding new domain
+    blocklist_scroll: usize,        // Scroll position for blocklist
+    server_config_content: Option<String>,  // Cached server config file content
+    server_config_scroll: u16,      // Scroll position for server config view
     focus: ServerConfigFocus,
     dns_scroll: usize,
     error: Option<String>,
@@ -389,6 +400,22 @@ fn write_qr_png(data: &str, output_path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn generate_qr_ascii(data: &str) -> Result<String> {
+    use qrcode::render::unicode;
+    use qrcode::EcLevel;
+
+    // Use Low error correction for smaller QR code
+    let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::L)
+        .map_err(|_| crate::error::AppError::Config("QR generation failed".to_string()))?;
+
+    Ok(code
+        .render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Light)
+        .light_color(unicode::Dense1x2::Dark)
+        .quiet_zone(true)  // Keep minimal border for better scanning
+        .build())
+}
+
 /// Menu items on the dashboard
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
@@ -453,6 +480,7 @@ pub enum Screen {
     ConfigOutput,
     Settings,
     Logs,
+    ServerConfigView,
 }
 
 pub struct App {
@@ -568,8 +596,10 @@ impl App {
                 output_json: None,
                 output_uri: None,
                 output_qr_path: None,
+                output_qr_ascii: None,
                 error: None,
                 scroll: 0,
+                copy_message: None,
             },
             client_config_state: ClientConfigState {
                 routing_preset: RoutingPreset::Default,
@@ -586,7 +616,13 @@ impl App {
                 dns_selection: crate::dns_presets::DnsSelection::default(),
                 custom_dns_input: InputField::new(""),
                 block_ads: false,
-                block_iran: false,
+                block_iran_gov: false,
+                block_all_iran: false,
+                custom_blocklist: Vec::new(),
+                blocklist_input: InputField::new(""),
+                blocklist_scroll: 0,
+                server_config_content: None,
+                server_config_scroll: 0,
                 focus: ServerConfigFocus::RoutingPreset,
                 dns_scroll: 0,
                 error: None,
@@ -666,6 +702,7 @@ impl App {
             Screen::ConfigOutput => format!(" sbconfig v{} > Config Output ", Self::app_version()),
             Screen::Settings => format!(" sbconfig v{} > Settings ", Self::app_version()),
             Screen::Logs => format!(" sbconfig v{} > Logs ", Self::app_version()),
+            Screen::ServerConfigView => format!(" sbconfig v{} > Server Config ", Self::app_version()),
         };
         let header = Block::default()
             .borders(Borders::ALL)
@@ -700,6 +737,7 @@ impl App {
             Screen::ConfigOutput => self.draw_config_output(frame, chunks[1]),
             Screen::Settings => self.draw_settings(frame, chunks[1]),
             Screen::Logs => self.draw_logs(frame, chunks[1]),
+            Screen::ServerConfigView => self.draw_server_config_view(frame, chunks[1]),
         }
 
         // Footer with navigation hints
@@ -723,15 +761,28 @@ impl App {
                 " [Up/Down] Navigate  [Left/Right] Toggle  [Enter] Save  [Esc] Close  [q] Quit "
             }
             Screen::ConfigsMenu => " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit ",
-            Screen::ClientConfigSettings | Screen::ServerConfigSettings => {
+            Screen::ClientConfigSettings => {
                 " [Tab] Next  [Shift+Tab] Prev  [Up/Down] Select  [Space] Toggle  [Ctrl+S] Save  [Esc] Back  [q] Quit "
+            }
+            Screen::ServerConfigSettings => {
+                // Show context-aware help based on current focus
+                let is_typing = matches!(
+                    self.server_config_state.focus,
+                    ServerConfigFocus::CustomDns | ServerConfigFocus::CustomBlocklist
+                );
+                if is_typing {
+                    " Type comma-separated domains  [Enter] Add All  [Tab] Next  [Esc] Back "
+                } else {
+                    " [Tab] Next  [Up/Down] Select  [Space] Toggle  [Enter] View/Add  [d] Delete  [Ctrl+S] Save  [Esc] Back "
+                }
             }
             Screen::ConfigUsers => {
                 " [Up/Down] Navigate  [Enter] Select  [Esc] Back  [q] Quit "
             }
             Screen::ConfigHelp => " [Esc] Back  [q] Quit ",
-            Screen::ConfigOutput => " [Up/Down] Scroll  [Esc] Back  [q] Quit ",
+            Screen::ConfigOutput => " [Up/Down] Scroll  [c] Copy Config  [u] Copy URI  [Esc] Back  [q] Quit ",
             Screen::Settings => " [Up/Down] Navigate  [Enter] Edit  [Esc] Back  [q] Quit ",
+            Screen::ServerConfigView => " [Up/Down] Scroll  [Esc] Back  [q] Quit ",
             _ => " [Esc] Back  [b] Back  [q] Quit ",
         };
         let footer = Paragraph::new(footer_text)
@@ -1499,12 +1550,53 @@ impl App {
             lines.push(Line::from(""));
         }
 
+        // Show copy message if available - make it very prominent
+        if let Some(msg) = &self.config_state.copy_message {
+            let (color, prefix) = if msg.starts_with("SUCCESS") {
+                (Color::Green, "✓")
+            } else {
+                (Color::Red, "✗")
+            };
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} {} ", prefix, msg),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " Press any key to dismiss this message ",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from("─".repeat(wrap_width)));
+            lines.push(Line::from(""));
+        }
+
         if let Some(uri) = &self.config_state.output_uri {
             lines.push(Line::from(Span::styled(
                 "URI (wrapped for display)",
                 Style::default().add_modifier(Modifier::BOLD),
             )));
             for line in wrap_hard(uri, wrap_width) {
+                lines.push(Line::from(line));
+            }
+            lines.push(Line::from(""));
+        }
+
+        // Display ASCII QR code in terminal
+        if let Some(qr_ascii) = &self.config_state.output_qr_ascii {
+            lines.push(Line::from(Span::styled(
+                "QR Code (scan with sing-box app)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            for line in qr_ascii.lines() {
                 lines.push(Line::from(line));
             }
             lines.push(Line::from(""));
@@ -2102,26 +2194,138 @@ impl App {
         );
         cursor_y += 2;
 
-        // Block Iran Toggle
-        let iran_focused = self.server_config_state.focus == ServerConfigFocus::BlockIran;
-        let iran_checkbox = if self.server_config_state.block_iran { "[✓]" } else { "[ ]" };
-        let iran_line = format!("   {} Block Iranian Government Sites", iran_checkbox);
-        let iran_style = if iran_focused {
+        // Block Iran Government Sites Toggle
+        let iran_gov_focused = self.server_config_state.focus == ServerConfigFocus::BlockIranGov;
+        let iran_gov_checkbox = if self.server_config_state.block_iran_gov { "[✓]" } else { "[ ]" };
+        let iran_gov_line = format!("   {} Block Iranian Government Sites", iran_gov_checkbox);
+        let iran_gov_style = if iran_gov_focused {
             Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else if self.server_config_state.block_iran {
+        } else if self.server_config_state.block_iran_gov {
             Style::default().fg(Color::Green)
         } else {
             Style::default()
         };
         frame.render_widget(
-            Paragraph::new(iran_line).style(iran_style),
+            Paragraph::new(iran_gov_line).style(iran_gov_style),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 1;
+
+        // Block All Iran Sites Toggle
+        let iran_all_focused = self.server_config_state.focus == ServerConfigFocus::BlockAllIran;
+        let iran_all_checkbox = if self.server_config_state.block_all_iran { "[✓]" } else { "[ ]" };
+        let iran_all_line = format!("   {} Block All Iranian Sites", iran_all_checkbox);
+        let iran_all_style = if iran_all_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if self.server_config_state.block_all_iran {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(iran_all_line).style(iran_all_style),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 2;
+
+        // Custom Blocklist Section
+        let blocklist_focused = self.server_config_state.focus == ServerConfigFocus::CustomBlocklist;
+        frame.render_widget(
+            Paragraph::new(Span::styled(" Custom Blocked Domains", heading_style)),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 1;
+
+        // Show input field for adding new domain
+        let blocklist_input_value = &self.server_config_state.blocklist_input.value;
+        let blocklist_input_text = if blocklist_focused {
+            let cursor = if self.cursor_visible { "█" } else { "" };
+            if blocklist_input_value.is_empty() {
+                format!("     Add domains: {}", cursor)
+            } else {
+                format!("     Add domains: {}{}", blocklist_input_value, cursor)
+            }
+        } else if blocklist_input_value.is_empty() {
+            "     Add domains: (e.g., example.com, test.com, foo.org) - Press Enter to add".to_string()
+        } else {
+            format!("     Add domains: {}", blocklist_input_value)
+        };
+
+        let blocklist_input_style = if blocklist_focused {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else if blocklist_input_value.is_empty() {
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        frame.render_widget(
+            Paragraph::new(blocklist_input_text).style(blocklist_input_style),
+            Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+        );
+        cursor_y += 1;
+
+        // Show current blocked domains
+        if self.server_config_state.custom_blocklist.is_empty() {
+            frame.render_widget(
+                Paragraph::new("     (no domains blocked)")
+                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+            );
+            cursor_y += 1;
+        } else {
+            let visible_start = self.server_config_state.blocklist_scroll;
+            let visible_end = (visible_start + 3).min(self.server_config_state.custom_blocklist.len());
+
+            for (_i, domain) in self.server_config_state.custom_blocklist.iter().enumerate()
+                .skip(visible_start).take(3) {
+                let line = format!("       • {} [d to delete]", domain);
+                frame.render_widget(
+                    Paragraph::new(line).style(Style::default().fg(Color::Yellow)),
+                    Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+                );
+                cursor_y += 1;
+            }
+
+            if self.server_config_state.custom_blocklist.len() > 3 {
+                frame.render_widget(
+                    Paragraph::new(format!("     (showing {}-{} of {} domains)", visible_start + 1, visible_end, self.server_config_state.custom_blocklist.len()))
+                        .style(Style::default().fg(Color::DarkGray)),
+                    Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
+                );
+                cursor_y += 1;
+            }
+        }
+        cursor_y += 2;
+
+        // View Server Config Section
+        let view_config_focused = self.server_config_state.focus == ServerConfigFocus::ViewServerConfig;
+        let view_config_style = if view_config_focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        frame.render_widget(
+            Paragraph::new("   > View sing-box Server Config").style(view_config_style),
             Rect { x: inner.x, y: cursor_y, width: inner.width, height: 1 },
         );
         cursor_y += 3;
 
-        // Footer
+        // Footer - context-aware based on current focus
+        let is_typing = matches!(
+            self.server_config_state.focus,
+            ServerConfigFocus::CustomDns | ServerConfigFocus::CustomBlocklist
+        );
+
+        let footer_text = if is_typing {
+            " Type comma-separated domains (e.g., example.com, test.com)  [Enter] Add  [Tab] Next "
+        } else {
+            " [Tab] Next  [Up/Down] Navigate  [Space] Toggle  [Enter] View/Add  [d] Delete domain  [Ctrl+S] Save "
+        };
+
         let mut footer_lines = vec![
-            Line::from(" [Tab] Next section  [Space] Toggle  [Ctrl+S] Save"),
+            Line::from(footer_text),
         ];
         if let Some(error) = &self.server_config_state.error {
             footer_lines.push(Line::from(""));
@@ -2463,6 +2667,30 @@ impl App {
         frame.render_widget(paragraph, inner);
     }
 
+    fn draw_server_config_view(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                " sing-box Server Configuration ",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if let Some(content) = &self.server_config_state.server_config_content {
+            let lines: Vec<Line> = content.lines().map(|l| Line::from(l)).collect();
+            let paragraph = Paragraph::new(lines)
+                .scroll((self.server_config_state.server_config_scroll, 0))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(paragraph, inner);
+        } else {
+            frame.render_widget(
+                Paragraph::new("No server config loaded."),
+                inner,
+            );
+        }
+    }
+
     fn draw_logs(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -2529,7 +2757,20 @@ impl App {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
+                    // Check if we're typing in an input field - don't quit on 'q' if so
+                    let is_typing_in_client_config = self.screen == Screen::ClientConfigSettings
+                        && matches!(
+                            self.client_config_state.focus,
+                            ClientConfigFocus::CustomDns | ClientConfigFocus::ProxyPort
+                        );
+                    let is_typing_in_server_config = self.screen == Screen::ServerConfigSettings
+                        && matches!(
+                            self.server_config_state.focus,
+                            ServerConfigFocus::CustomDns | ServerConfigFocus::CustomBlocklist
+                        );
+                    let is_typing = is_typing_in_client_config || is_typing_in_server_config;
+
+                    if matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) && !is_typing {
                         self.running = false;
                         return Ok(());
                     }
@@ -2580,6 +2821,7 @@ impl App {
                         Screen::ConfigOutput => self.handle_config_output_input(key.code),
                         Screen::Settings => self.handle_settings_input(key.code),
                         Screen::Logs => self.handle_logs_input(key.code),
+                        Screen::ServerConfigView => self.handle_server_config_view_input(key.code),
                     }
                 }
             }
@@ -2887,7 +3129,9 @@ impl App {
                         self.config_state.output_json = None;
                         self.config_state.output_uri = None;
                         self.config_state.output_qr_path = None;
+                        self.config_state.output_qr_ascii = None;
                         self.config_state.error = None;
+                        self.config_state.copy_message = None;
                         if let Err(err) = self.generate_config_for_selected_user() {
                             self.config_state.error = Some(err.to_string());
                         }
@@ -3070,25 +3314,98 @@ impl App {
 
     fn handle_server_config_input(&mut self, key: KeyCode) {
         use crate::dns_presets::DnsPreset;
+
+        // Check if we're in an input field (typing mode)
+        let is_typing = matches!(
+            self.server_config_state.focus,
+            ServerConfigFocus::CustomDns | ServerConfigFocus::CustomBlocklist
+        );
+
+        // When typing, handle ALL input first before any other commands
+        if is_typing {
+            match key {
+                KeyCode::Char(ch) => match self.server_config_state.focus {
+                    ServerConfigFocus::CustomDns => {
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            self.server_config_state.custom_dns_input.insert_char(ch);
+                        }
+                    }
+                    ServerConfigFocus::CustomBlocklist => {
+                        // Allow all printable chars including commas for comma-separated domains
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            self.server_config_state.blocklist_input.insert_char(ch);
+                        }
+                    }
+                    _ => {}
+                },
+                KeyCode::Backspace => match self.server_config_state.focus {
+                    ServerConfigFocus::CustomDns => {
+                        self.server_config_state.custom_dns_input.backspace();
+                    }
+                    ServerConfigFocus::CustomBlocklist => {
+                        self.server_config_state.blocklist_input.backspace();
+                    }
+                    _ => {}
+                },
+                KeyCode::Enter => match self.server_config_state.focus {
+                    ServerConfigFocus::CustomBlocklist => {
+                        // Support comma-separated domains
+                        let input = self.server_config_state.blocklist_input.value.trim();
+                        if !input.is_empty() {
+                            // Split by comma and add each domain
+                            for domain in input.split(',') {
+                                let domain = domain.trim().to_string();
+                                if !domain.is_empty() && !self.server_config_state.custom_blocklist.contains(&domain) {
+                                    self.server_config_state.custom_blocklist.push(domain);
+                                }
+                            }
+                            self.server_config_state.blocklist_input.set("");
+                        }
+                    }
+                    _ => {}
+                },
+                KeyCode::Tab => {
+                    // Tab moves to next field even when typing
+                    self.server_config_state.focus = match self.server_config_state.focus {
+                        ServerConfigFocus::CustomDns => ServerConfigFocus::BlockAds,
+                        ServerConfigFocus::CustomBlocklist => ServerConfigFocus::ViewServerConfig,
+                        _ => self.server_config_state.focus,
+                    };
+                }
+                KeyCode::Esc => self.pop_screen(),
+                _ => {}
+            }
+            return;
+        }
+
+        // When NOT typing, handle navigation and commands
         match key {
+            KeyCode::Esc => self.pop_screen(),
             KeyCode::Char('q') | KeyCode::Char('Q') => self.running = false,
-            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+            KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
+
             KeyCode::Tab => {
                 self.server_config_state.focus = match self.server_config_state.focus {
                     ServerConfigFocus::RoutingPreset => ServerConfigFocus::DnsPresets,
                     ServerConfigFocus::DnsPresets => ServerConfigFocus::CustomDns,
                     ServerConfigFocus::CustomDns => ServerConfigFocus::BlockAds,
-                    ServerConfigFocus::BlockAds => ServerConfigFocus::BlockIran,
-                    ServerConfigFocus::BlockIran => ServerConfigFocus::RoutingPreset,
+                    ServerConfigFocus::BlockAds => ServerConfigFocus::BlockIranGov,
+                    ServerConfigFocus::BlockIranGov => ServerConfigFocus::BlockAllIran,
+                    ServerConfigFocus::BlockAllIran => ServerConfigFocus::CustomBlocklist,
+                    ServerConfigFocus::CustomBlocklist => ServerConfigFocus::ViewServerConfig,
+                    ServerConfigFocus::ViewServerConfig => ServerConfigFocus::RoutingPreset,
                 };
             }
             KeyCode::BackTab => {
                 self.server_config_state.focus = match self.server_config_state.focus {
-                    ServerConfigFocus::RoutingPreset => ServerConfigFocus::BlockIran,
+                    ServerConfigFocus::RoutingPreset => ServerConfigFocus::ViewServerConfig,
                     ServerConfigFocus::DnsPresets => ServerConfigFocus::RoutingPreset,
                     ServerConfigFocus::CustomDns => ServerConfigFocus::DnsPresets,
                     ServerConfigFocus::BlockAds => ServerConfigFocus::CustomDns,
-                    ServerConfigFocus::BlockIran => ServerConfigFocus::BlockAds,
+                    ServerConfigFocus::BlockIranGov => ServerConfigFocus::BlockAds,
+                    ServerConfigFocus::BlockAllIran => ServerConfigFocus::BlockIranGov,
+                    ServerConfigFocus::CustomBlocklist => ServerConfigFocus::BlockAllIran,
+                    ServerConfigFocus::ViewServerConfig => ServerConfigFocus::CustomBlocklist,
                 };
             }
             KeyCode::Up => match self.server_config_state.focus {
@@ -3102,6 +3419,17 @@ impl App {
                 ServerConfigFocus::DnsPresets => {
                     if self.server_config_state.dns_scroll > 0 {
                         self.server_config_state.dns_scroll -= 1;
+                    }
+                }
+                ServerConfigFocus::BlockIranGov => {
+                    self.server_config_state.focus = ServerConfigFocus::BlockAds;
+                }
+                ServerConfigFocus::BlockAllIran => {
+                    self.server_config_state.focus = ServerConfigFocus::BlockIranGov;
+                }
+                ServerConfigFocus::CustomBlocklist => {
+                    if self.server_config_state.blocklist_scroll > 0 {
+                        self.server_config_state.blocklist_scroll -= 1;
                     }
                 }
                 _ => {}
@@ -3120,6 +3448,18 @@ impl App {
                         self.server_config_state.dns_scroll += 1;
                     }
                 }
+                ServerConfigFocus::BlockAds => {
+                    self.server_config_state.focus = ServerConfigFocus::BlockIranGov;
+                }
+                ServerConfigFocus::BlockIranGov => {
+                    self.server_config_state.focus = ServerConfigFocus::BlockAllIran;
+                }
+                ServerConfigFocus::CustomBlocklist => {
+                    let total_domains = self.server_config_state.custom_blocklist.len();
+                    if total_domains > 3 && self.server_config_state.blocklist_scroll < total_domains - 3 {
+                        self.server_config_state.blocklist_scroll += 1;
+                    }
+                }
                 _ => {}
             },
             KeyCode::Char(' ') => match self.server_config_state.focus {
@@ -3132,24 +3472,31 @@ impl App {
                 ServerConfigFocus::BlockAds => {
                     self.server_config_state.block_ads = !self.server_config_state.block_ads;
                 }
-                ServerConfigFocus::BlockIran => {
-                    self.server_config_state.block_iran = !self.server_config_state.block_iran;
+                ServerConfigFocus::BlockIranGov => {
+                    self.server_config_state.block_iran_gov = !self.server_config_state.block_iran_gov;
+                }
+                ServerConfigFocus::BlockAllIran => {
+                    self.server_config_state.block_all_iran = !self.server_config_state.block_all_iran;
                 }
                 _ => {}
             },
-            KeyCode::Char(ch) => match self.server_config_state.focus {
-                ServerConfigFocus::CustomDns => {
-                    if ch.is_ascii_graphic() || ch == ' ' {
-                        self.server_config_state.custom_dns_input.insert_char(ch);
+            KeyCode::Enter => match self.server_config_state.focus {
+                ServerConfigFocus::ViewServerConfig => {
+                    // Load and display server config
+                    self.load_and_show_server_config();
+                }
+                _ => {}
+            },
+            // Delete last domain from blocklist
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if self.server_config_state.focus == ServerConfigFocus::CustomBlocklist {
+                    if !self.server_config_state.custom_blocklist.is_empty() {
+                        self.server_config_state.custom_blocklist.pop();
+                        if self.server_config_state.blocklist_scroll > 0 {
+                            self.server_config_state.blocklist_scroll -= 1;
+                        }
                     }
                 }
-                _ => {}
-            },
-            KeyCode::Backspace => match self.server_config_state.focus {
-                ServerConfigFocus::CustomDns => {
-                    self.server_config_state.custom_dns_input.backspace();
-                }
-                _ => {}
             },
             _ => {}
         }
@@ -3185,7 +3532,9 @@ impl App {
                     self.config_state.output_json = None;
                     self.config_state.output_uri = None;
                     self.config_state.output_qr_path = None;
+                    self.config_state.output_qr_ascii = None;
                     self.config_state.error = None;
+                    self.config_state.copy_message = None;
                     if let Err(err) = self.generate_config_for_selected_user() {
                         self.config_state.error = Some(err.to_string());
                     }
@@ -3400,6 +3749,18 @@ impl App {
     }
 
     fn handle_config_output_input(&mut self, key: KeyCode) {
+        // Clear copy message on any key press (except copy keys themselves)
+        if self.config_state.copy_message.is_some() {
+            match key {
+                KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Char('u') | KeyCode::Char('U') => {
+                    // Don't clear on copy keys - they will update the message
+                }
+                _ => {
+                    self.config_state.copy_message = None;
+                }
+            }
+        }
+
         match key {
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => self.pop_screen(),
             KeyCode::Down | KeyCode::Char('j') => {
@@ -3407,6 +3768,46 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.config_state.scroll = self.config_state.scroll.saturating_sub(1)
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                // Copy JSON config to clipboard
+                if let Some(json) = &self.config_state.output_json {
+                    match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => {
+                            if let Err(err) = clipboard.set_text(json.clone()) {
+                                self.config_state.copy_message = Some(format!("ERROR: Failed to copy config - {}", err));
+                            } else {
+                                self.config_state.copy_message = Some("SUCCESS: Config JSON copied to clipboard!".to_string());
+                                self.config_state.scroll = 0; // Scroll to top to show message
+                            }
+                        }
+                        Err(err) => {
+                            self.config_state.copy_message = Some(format!("ERROR: Clipboard not available - {}", err));
+                        }
+                    }
+                } else {
+                    self.config_state.copy_message = Some("ERROR: No config available to copy".to_string());
+                }
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                // Copy URI to clipboard
+                if let Some(uri) = &self.config_state.output_uri {
+                    match arboard::Clipboard::new() {
+                        Ok(mut clipboard) => {
+                            if let Err(err) = clipboard.set_text(uri.clone()) {
+                                self.config_state.copy_message = Some(format!("ERROR: Failed to copy URI - {}", err));
+                            } else {
+                                self.config_state.copy_message = Some("SUCCESS: URI copied to clipboard!".to_string());
+                                self.config_state.scroll = 0; // Scroll to top to show message
+                            }
+                        }
+                        Err(err) => {
+                            self.config_state.copy_message = Some(format!("ERROR: Clipboard not available - {}", err));
+                        }
+                    }
+                } else {
+                    self.config_state.copy_message = Some("ERROR: No URI available to copy".to_string());
+                }
             }
             _ => {}
         }
@@ -3685,6 +4086,31 @@ impl App {
         }
     }
 
+    fn handle_server_config_view_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => {
+                self.pop_screen();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.server_config_state.server_config_scroll =
+                    self.server_config_state.server_config_scroll.saturating_add(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.server_config_state.server_config_scroll =
+                    self.server_config_state.server_config_scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                self.server_config_state.server_config_scroll =
+                    self.server_config_state.server_config_scroll.saturating_add(10);
+            }
+            KeyCode::PageUp => {
+                self.server_config_state.server_config_scroll =
+                    self.server_config_state.server_config_scroll.saturating_sub(10);
+            }
+            _ => {}
+        }
+    }
+
     fn handle_logs_input(&mut self, key: KeyCode) {
         let sessions = self.db.list_sessions(20).unwrap_or_default();
         match key {
@@ -3886,13 +4312,34 @@ impl App {
             .unwrap_or_else(|| "false".to_string());
         self.server_config_state.block_ads = block_ads == "true";
 
-        let block_iran = self
+        let block_iran_gov = self
             .db
-            .get_setting("server_block_iran")
+            .get_setting("server_block_iran_gov")
             .ok()
             .flatten()
             .unwrap_or_else(|| "false".to_string());
-        self.server_config_state.block_iran = block_iran == "true";
+        self.server_config_state.block_iran_gov = block_iran_gov == "true";
+
+        let block_all_iran = self
+            .db
+            .get_setting("server_block_all_iran")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "false".to_string());
+        self.server_config_state.block_all_iran = block_all_iran == "true";
+
+        // Load custom blocklist
+        let blocklist_str = self
+            .db
+            .get_setting("server_custom_blocklist")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        self.server_config_state.custom_blocklist = if blocklist_str.is_empty() {
+            Vec::new()
+        } else {
+            blocklist_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        };
 
         self.server_config_state.error = None;
     }
@@ -3922,14 +4369,114 @@ impl App {
             },
         )?;
         self.db.set_setting(
-            "server_block_iran",
-            if self.server_config_state.block_iran {
+            "server_block_iran_gov",
+            if self.server_config_state.block_iran_gov {
                 "true"
             } else {
                 "false"
             },
         )?;
+        self.db.set_setting(
+            "server_block_all_iran",
+            if self.server_config_state.block_all_iran {
+                "true"
+            } else {
+                "false"
+            },
+        )?;
+
+        // Save custom blocklist
+        let blocklist_joined = self.server_config_state.custom_blocklist.join(",");
+        self.db.set_setting("server_custom_blocklist", &blocklist_joined)?;
+
         Ok(())
+    }
+
+    fn load_and_show_server_config(&mut self) {
+        use singbox::{ServerConfig, ServerProtocol};
+
+        let mut output = String::new();
+
+        // Check current mode
+        let server_mode = self.db
+            .get_setting("server_mode")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "ssh_only".to_string());
+
+        if server_mode == "ssh_only" {
+            // SSH-Only mode explanation
+            output.push_str("=== CURRENT MODE: SSH-Only (OpenSSH) ===\n\n");
+            output.push_str("In SSH-Only mode, the server does NOT run sing-box.\n");
+            output.push_str("Traffic is tunneled through OpenSSH directly.\n\n");
+            output.push_str("Server requirements:\n");
+            output.push_str("  - OpenSSH server (sshd) running\n");
+            output.push_str("  - SSH port configured (e.g., 7344)\n");
+            output.push_str("  - User accounts with SSH keys\n\n");
+            output.push_str("Routing happens CLIENT-SIDE only.\n");
+            output.push_str("The server just forwards packets.\n\n");
+            output.push_str("--- Current /etc/sing-box/config.json (if exists) ---\n");
+
+            // Show existing config if any
+            if let Ok(existing) = fs::read_to_string("/etc/sing-box/config.json") {
+                output.push_str(&existing);
+                output.push_str("\n\n(This config is likely unused in SSH-only mode)\n");
+            } else {
+                output.push_str("(File not found - normal for SSH-only mode)\n");
+            }
+
+        } else {
+            // sing-box Server mode - generate actual config
+            output.push_str("=== CURRENT MODE: sing-box Server ===\n\n");
+            output.push_str("Generated server configuration based on your settings:\n\n");
+            output.push_str("--- Generated Config ---\n");
+
+            // Get settings from database
+            let dns_servers_str = self.db
+                .get_setting("server_dns_servers")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "8.8.8.8,1.1.1.1".to_string());
+            let dns_servers: Vec<String> = dns_servers_str.split(',').map(|s| s.trim().to_string()).collect();
+
+            let block_ads = self.server_config_state.block_ads;
+            let block_iran_gov = self.server_config_state.block_iran_gov;
+            let block_all_iran = self.server_config_state.block_all_iran;
+            let custom_blocklist = &self.server_config_state.custom_blocklist;
+
+            // Generate server config (using Shadowsocks as default)
+            match ServerConfig::generate(
+                ServerProtocol::Shadowsocks,
+                8388, // default port
+                &dns_servers,
+                block_ads,
+                block_iran_gov,
+                block_all_iran,
+                custom_blocklist,
+            ) {
+                Ok(config) => {
+                    if let Ok(json) = config.to_json() {
+                        output.push_str(&json);
+                    } else {
+                        output.push_str("Error: Failed to serialize config to JSON\n");
+                    }
+                }
+                Err(e) => {
+                    output.push_str(&format!("Error generating config: {}\n", e));
+                }
+            }
+
+            output.push_str("\n\n--- Current /etc/sing-box/config.json ---\n");
+            if let Ok(existing) = fs::read_to_string("/etc/sing-box/config.json") {
+                output.push_str(&existing);
+            } else {
+                output.push_str("(File not found)\n");
+            }
+        }
+
+        self.server_config_state.server_config_content = Some(output);
+        self.server_config_state.server_config_scroll = 0;
+        self.push_screen(Screen::ServerConfigView);
     }
 
     fn parse_dns_servers(input: &str) -> Result<Vec<String>> {
@@ -4418,8 +4965,20 @@ impl App {
         self.config_state.output_json = Some(json);
         self.config_state.output_uri = Some(uri.clone());
         self.config_state.output_qr_path = None;
+        self.config_state.output_qr_ascii = None;
         self.config_state.error = None;
 
+        // Generate ASCII QR code for terminal display
+        match generate_qr_ascii(&uri) {
+            Ok(ascii_qr) => {
+                self.config_state.output_qr_ascii = Some(ascii_qr);
+            }
+            Err(err) => {
+                self.config_state.error = Some(format!("Failed to generate QR code: {}", err));
+            }
+        }
+
+        // Generate PNG QR code for file export
         let output_dir = ensure_config_output_dir()?;
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let filename = format!("sbconfig_{}_{}.png", user.username, timestamp);

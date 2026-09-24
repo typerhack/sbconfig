@@ -1,6 +1,6 @@
 [package]
 name = "sbconfig"
-version = "0.1.16"
+version = "0.1.18"
 edition = "2021"
 description = "TUI tool for managing sing-box SSH proxy configurations"
 authors = ["typerhack"]
@@ -28,6 +28,9 @@ serde_json = "1.0"
 # QR code generation
 qrcode = { version = "0.14", features = ["image"] }
 image = "0.25"
+
+# Clipboard support
+arboard = "3.4"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
